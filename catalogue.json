@@ -1,40 +1,64 @@
 {
   "version": 1,
   "_comment": "Every product worth building. `items` are one-offs; `sweeps` expand their axes into every combination. Validated against each generator's own options, so a typo here fails in seconds rather than in a hundred build jobs.",
-
   "items": [
     {
       "name": "fit-gauge_greenmade-mini",
       "generator": "fit-gauge",
-      "options": { "bin": "greenmade-mini" }
+      "options": {
+        "bin": "greenmade-mini"
+      }
     },
     {
       "name": "bin-shelf_greenmade-mini_1x3_wall-mounted",
       "generator": "bin-shelf",
       "options": {
-        "columns": 1, "rows": 3, "pattern": "honeycomb",
-        "wall_mount": true, "stackable": false
+        "columns": 1,
+        "rows": 3,
+        "pattern": "honeycomb",
+        "wall_mount": true,
+        "stackable": false
       }
     },
     {
       "name": "bin-shelf_greenmade-mini_2x2_desk",
       "generator": "bin-shelf",
       "options": {
-        "columns": 2, "rows": 2, "pattern": "grid",
-        "base": "solid", "top": "solid", "front_stop": "label"
-      }
+        "columns": 2,
+        "rows": 2,
+        "pattern": "grid",
+        "base": "solid",
+        "top": "solid",
+        "front_stop": "label",
+        "headroom": 22
+      },
+      "_comment": "headroom is raised to clear the 18 mm label plate, so a bin lifts straight out instead of having to be tilted"
     }
   ],
-
   "sweeps": [
     {
       "generator": "bin-shelf",
       "name": "bin-shelf_greenmade-mini_{columns}x{rows}_{pattern}",
-      "options": { "bin": "greenmade-mini" },
+      "options": {
+        "bin": "greenmade-mini"
+      },
       "axes": {
-        "columns": [1, 2],
-        "rows": [2, 3],
-        "pattern": ["windows", "grid", "honeycomb", "diamond", "round", "triangle"]
+        "columns": [
+          1,
+          2
+        ],
+        "rows": [
+          2,
+          3
+        ],
+        "pattern": [
+          "windows",
+          "grid",
+          "honeycomb",
+          "diamond",
+          "round",
+          "triangle"
+        ]
       }
     }
   ]
