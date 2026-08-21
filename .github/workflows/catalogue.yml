@@ -28,8 +28,14 @@ on:
         description: "Items per parallel job"
         required: false
         default: "8"
+      publish:
+        description: "Publish the result as a GitHub release"
+        required: false
+        default: "no"
+        type: choice
+        options: [ "no", "yes" ]
       release_tag:
-        description: "Publish the result as a release under this tag (blank to skip)"
+        description: "Override the tag (blank derives it from catalogue.json)"
         required: false
         default: ""
   push:
@@ -151,10 +157,38 @@ jobs:
       - name: Verify everything that shipped
         run: storagegen verify release --json release/verify.json
 
+      # The tag names the product line and comes out of catalogue.json, so it
+      # cannot drift from what the run actually built.
+      - name: Work out what this release is called
+        id: release
+        run: |
+          set -euo pipefail
+          # Mirror the selection the build jobs used, so "complete" reflects
+          # what was actually built rather than what the catalogue holds.
+          ARGS=()
+          [ -n "${LIMIT}" ] && ARGS+=(--limit "${LIMIT}")
+          [ -n "${GENERATOR}" ] && ARGS+=(--generator "${GENERATOR}")
+          INFO=$(storagegen plan "${ARGS[@]+"${ARGS[@]}"}" --emit release)
+          echo "$INFO"
+          TAG=$(echo "$INFO" | python -c 'import json,sys; print(json.load(sys.stdin)["tag"])')
+          TITLE=$(echo "$INFO" | python -c 'import json,sys; print(json.load(sys.stdin)["display"])')
+          COMPLETE=$(echo "$INFO" | python -c 'import json,sys; print(json.load(sys.stdin)["complete"])')
+          echo "tag=${OVERRIDE:-$TAG}" >> "$GITHUB_OUTPUT"
+          echo "title=${TITLE}" >> "$GITHUB_OUTPUT"
+          echo "complete=${COMPLETE}" >> "$GITHUB_OUTPUT"
+        env:
+          OVERRIDE: ${{ inputs.release_tag }}
+          LIMIT: ${{ inputs.limit }}
+          GENERATOR: ${{ inputs.generator }}
+
+      - name: Write the release notes
+        run: |
+          storagegen notes release --verify release/verify.json
+
       - name: Summarise
         if: always()
         run: |
-          cat release/INDEX.md >> "$GITHUB_STEP_SUMMARY" || true
+          cat release/RELEASE-NOTES.md >> "$GITHUB_STEP_SUMMARY" || true
           echo "Planned ${{ needs.plan.outputs.count }} items; build result: ${{ needs.build.result }}" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
@@ -163,18 +197,40 @@ jobs:
           path: release/
           retention-days: 90
 
-      - name: Publish a release
-        if: inputs.release_tag != ''
+      # A tag claims to be the whole catalogue, so refuse to hang one on a run
+      # that was narrowed by --limit or --generator.
+      - name: Refuse to publish a partial run
+        if: inputs.publish == 'yes' && steps.release.outputs.complete != 'True'
+        run: |
+          echo "This run built ${{ needs.plan.outputs.count }} of the catalogue, not all of it." >&2
+          echo "Publishing it as ${{ steps.release.outputs.tag }} would claim more than it contains." >&2
+          echo "Re-run with no limit and no generator filter, or pass release_tag to name it something else." >&2
+          exit 1
+
+      - name: Publish the release
+        if: inputs.publish == 'yes' && needs.build.result == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.release_tag }}
+          TAG: ${{ steps.release.outputs.tag }}
+          TITLE: ${{ steps.release.outputs.title }}
         run: |
           set -euo pipefail
-          cd release && zip -qr "../models-${TAG}.zip" . && cd ..
-          gh release create "${TAG}" "models-${TAG}.zip" \
-            --title "Models ${TAG}" \
-            --notes-file release/INDEX.md \
-            || gh release upload "${TAG}" "models-${TAG}.zip" --clobber
+          ( cd release && zip -qr "../${TAG}.zip" . )
+          ls -lh "${TAG}.zip"
+          # --target pins the tag to the commit that was built. Without it the
+          # tag would be cut from the default branch, which is not this code.
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" "${TAG}.zip" --clobber
+            gh release edit "${TAG}" --title "${TITLE}" \
+              --notes-file release/RELEASE-NOTES.md
+          else
+            gh release create "${TAG}" "${TAG}.zip" \
+              --target "${GITHUB_SHA}" \
+              --title "${TITLE}" \
+              --notes-file release/RELEASE-NOTES.md
+          fi
+          echo "Published ${TAG}" >> "$GITHUB_STEP_SUMMARY"
+          gh release view "${TAG}" --json url --jq .url >> "$GITHUB_STEP_SUMMARY"
 
       - name: Fail if any build job failed
         if: needs.build.result != 'success'

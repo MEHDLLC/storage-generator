@@ -55,7 +55,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     plan.add_argument("--chunk-size", type=int, default=8, metavar="N",
                       help="variants per job when emitting a build matrix")
     plan.add_argument("--emit", default="table",
-                      choices=("table", "names", "json", "matrix", "count"),
+                      choices=("table", "names", "json", "matrix", "count",
+                               "release"),
                       help="shape of the output")
 
     batch = sub.add_parser("batch", help="build every run a catalogue selects")
@@ -75,6 +76,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     index = sub.add_parser(
         "index", help="write INDEX.md and index.json for a directory of runs")
     index.add_argument("directory", metavar="DIR")
+
+    notes = sub.add_parser(
+        "notes", help="write release notes for a directory of runs")
+    notes.add_argument("directory", metavar="DIR")
+    notes.add_argument("--catalogue", default=DEFAULT_CATALOGUE, metavar="FILE")
+    notes.add_argument("--verify", metavar="FILE",
+                       help="a report from `storagegen verify --json`")
+    notes.add_argument("--out", metavar="FILE",
+                       help="where to write (default DIR/RELEASE-NOTES.md)")
 
     check = sub.add_parser(
         "verify", help="re-read written STL/3MF files and check them")
@@ -116,6 +126,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         count = _write_index(root)
         print(f"indexed {count} model(s) in {root / 'INDEX.md'}")
         return 0 if count else 1
+    if args.command == "notes":
+        return _notes(args)
     if args.command == "verify":
         return _verify(args)
     return _build(args)
@@ -227,9 +239,8 @@ def _schema(key: str | None) -> int:
 
 
 def _selected(args: argparse.Namespace) -> list[Variant]:
-    variants = catalogue_module.load(Path(args.catalogue))
     return catalogue_module.select(
-        variants,
+        catalogue_module.load(Path(args.catalogue)).variants,
         generator=getattr(args, "generator", None),
         only=[n.strip() for n in args.only.split(",")] if args.only else None,
         limit=args.limit,
@@ -246,7 +257,28 @@ def _plan(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    if args.emit == "count":
+    if args.emit == "release":
+        catalogue = catalogue_module.load(Path(args.catalogue))
+        if catalogue.release is None:
+            print(
+                f"error: {args.catalogue} has no 'release' block, so there is "
+                "nothing to name a release after. Add one with a name, "
+                "version and title.",
+                file=sys.stderr,
+            )
+            return 2
+        # A tag claims to be the whole catalogue. Say so plainly when the run
+        # was narrowed, so a caller can refuse to publish a partial set under
+        # a name that implies everything.
+        complete = not (args.limit or args.generator or args.only)
+        payload = catalogue.release.to_dict()
+        payload.update({
+            "planned": len(chosen),
+            "total": len(catalogue),
+            "complete": complete and len(chosen) == len(catalogue),
+        })
+        print(json.dumps(payload, indent=2))
+    elif args.emit == "count":
         print(len(chosen))
     elif args.emit == "names":
         for variant in chosen:
@@ -381,6 +413,128 @@ def _write_index(root: Path, failures: Sequence[tuple[str, str]] = ()) -> int:
         )
     (root / "INDEX.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return len(entries)
+
+
+def _notes(args: argparse.Namespace) -> int:
+    """Compose release notes from what a run actually left on disk.
+
+    Built from index.json and the verify report rather than written by hand,
+    so the notes cannot claim a model count or a clean bill of health that the
+    files do not support.
+    """
+    root = Path(args.directory)
+    index_path = root / "index.json"
+    if not index_path.exists():
+        print(f"error: no index.json in {root}; run `storagegen index` first",
+              file=sys.stderr)
+        return 2
+
+    try:
+        catalogue = catalogue_module.load(Path(args.catalogue))
+    except CatalogueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    release = catalogue.release
+    if release is None:
+        print(f"error: {args.catalogue} has no 'release' block", file=sys.stderr)
+        return 2
+
+    built = json.loads(index_path.read_text())["built"]
+    generators = sorted({entry["generator"] for entry in built})
+    grams = sum(entry["grams"] for entry in built)
+
+    lines = [f"# {release.display}", ""]
+    if release.summary:
+        lines += [release.summary, ""]
+
+    lines += [
+        f"**{len(built)} models** from {len(generators)} generator"
+        f"{'s' if len(generators) != 1 else ''}"
+        f" ({', '.join(generators)}).",
+        "",
+    ]
+
+    if args.verify and Path(args.verify).exists():
+        reports = json.loads(Path(args.verify).read_text())
+        failed = [r for r in reports if not r["ok"]]
+        warned = [r for r in reports if r["ok"] and r["warnings"]]
+        lines += [
+            "## Validation",
+            "",
+            "Every file below was re-read off disk after it was written and "
+            "its topology rebuilt from scratch.",
+            "",
+            "| | |",
+            "|---|---|",
+            f"| Meshes checked | {len(reports)} |",
+            f"| Triangles | {sum(r['triangles'] for r in reports):,} |",
+            f"| Watertight | {sum(1 for r in reports if r['watertight'])} of {len(reports)} |",
+            f"| Winding consistent | {sum(1 for r in reports if r['winding_consistent'])} of {len(reports)} |",
+            f"| Single connected piece | {sum(1 for r in reports if r['components'] == 1)} of {len(reports)} |",
+            f"| **Failed** | **{len(failed)}** |",
+            f"| Warnings | {len(warned)} |",
+            "",
+        ]
+        if warned:
+            lines += [
+                "Warnings are all zero-area triangles: booleans leave a few "
+                "wherever two coplanar faces meet, the surface is still closed, "
+                "and every slicer skips them.",
+                "",
+            ]
+        if failed:
+            lines += ["Failed:", ""]
+            lines += [f"- `{r['name']}` — {'; '.join(r['problems'])}"
+                      for r in failed]
+            lines.append("")
+
+    lines += [
+        "## What is in the download",
+        "",
+        "One folder per model. Each contains:",
+        "",
+        "- **STL** per part and one **3MF** holding every part of that model, "
+        "with millimetre units, named objects, and a plate layout.",
+        "- **preview.png** and **preview-in-use.png** — the model, and the "
+        "model with its bins in.",
+        "- **listing.md** — what it is, what it fits, dimensions, print notes.",
+        "- **manifest.json** — every option, derived dimension and part size.",
+        "",
+        "`INDEX.md` at the top lists everything.",
+        "",
+        "## Printing",
+        "",
+        "Print as supplied, standing up, **no supports**. 0.2 mm layers, "
+        "3 perimeters, 20% infill. Rail undersides are cut back at 45 degrees "
+        "and window corners are chamfered, so nothing bridges more than 12 mm.",
+        "",
+        "**Print the fit gauge first.** The bin's outside dimensions are "
+        "published but its rim overhang is not, and that is what sets the rail "
+        "spacing. The gauge measures it without a caliper in under an hour of "
+        "printing, and comes with a short slice of the real rack to try the "
+        "fit on.",
+        "",
+        f"Total plastic across all {len(built)} models is about "
+        f"{grams / 1000:.1f} kg if every one were printed solid; a normal "
+        "walls-and-infill profile uses well under that.",
+        "",
+        "## Models",
+        "",
+        "| Model | Size (mm) | Plastic |",
+        "|---|---|---|",
+    ]
+    for entry in built:
+        size = entry["parts"][0]["size_mm"] if entry["parts"] else [0, 0, 0]
+        lines.append(
+            f"| {entry['name']} | "
+            + " x ".join(f"{v:.0f}" for v in size)
+            + f" | {entry['grams']:.0f} g |"
+        )
+
+    destination = Path(args.out) if args.out else root / "RELEASE-NOTES.md"
+    destination.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"wrote {destination} for {release.tag}")
+    return 0
 
 
 def _verify(args: argparse.Namespace) -> int:

@@ -1,6 +1,12 @@
 {
   "version": 1,
   "_comment": "Every product worth building. `items` are one-offs; `sweeps` expand their axes into every combination. Validated against each generator's own options, so a typo here fails in seconds rather than in a hundred build jobs.",
+  "release": {
+    "name": "storage-shelving",
+    "version": "0.1.0",
+    "title": "Storage Shelving",
+    "summary": "Hanging bin racks for the GreenMade Mini Bin, plus the fit gauge that measures your bin so the rails match it. Every rack carries its bins on a pair of rails that catch them under the rim, and prints upright in one piece with no support material."
+  },
   "items": [
     {
       "name": "fit-gauge_greenmade-mini",

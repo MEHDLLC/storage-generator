@@ -135,6 +135,50 @@ pure Python and numpy. There is nothing to render on a screen, so there is no
 display to fake and no segfault to work around. `pip install -e .` is the
 whole setup step.
 
+## Publishing a release
+
+The tag names the **product line**, not the repository. A run that builds bin
+racks and fit gauges is a shelving release; the repo will eventually hold other
+families. So the name lives in `catalogue.json` next to the things it names:
+
+```json
+"release": {
+  "name": "storage-shelving",
+  "version": "0.1.0",
+  "title": "Storage Shelving",
+  "summary": "Hanging bin racks for the GreenMade Mini Bin, plus the fit gauge..."
+}
+```
+
+```bash
+storagegen plan --emit release
+{"tag": "storage-shelving-v0.1.0", "display": "Storage Shelving v0.1.0",
+ "planned": 27, "total": 27, "complete": true, ...}
+```
+
+Nothing types a tag by hand, so it cannot drift from what was built. `name` has
+to be lower-case words joined by hyphens and `version` three numbers, because
+both end up in a git tag and a file name. Bumping the version is a deliberate
+edit to the catalogue — nothing auto-increments.
+
+Set the `publish` input to `yes` on the workflow and the collect job cuts the
+release: `storage-shelving-v0.1.0.zip` with everything in it, and notes written
+by `storagegen notes` from `index.json` and the verify report, so the model
+count and the clean bill of health come from the files rather than from prose.
+
+Two guards worth knowing:
+
+- **A partial run cannot be published.** If `--limit` or `--generator` narrowed
+  the build, `complete` comes back false and the job fails rather than hang a
+  tag that claims the whole catalogue on part of it. Pass `release_tag` to name
+  it something else if that is really what you want.
+- **The tag is pinned to the commit that was built** (`gh release create
+  --target $GITHUB_SHA`). Without that, the tag would be cut from the default
+  branch, which is not the code that produced the files.
+
+Re-running with the same version updates the existing release in place rather
+than failing.
+
 ## The workflows
 
 **`.github/workflows/ci.yml`** runs on every push: unit tests, then
@@ -150,8 +194,8 @@ whole setup step.
 3. **collect** downloads every chunk, re-indexes the merged set, verifies it
    again, uploads it as one artifact, and fails if any build job failed.
 
-Trigger it from the Actions tab with a limit and, optionally, a release tag to
-publish under. It also runs on a push that touches `catalogue.json`.
+Trigger it from the Actions tab: `limit` for "build me N items", `publish: yes`
+to cut a release. It also runs on a push that touches `catalogue.json`.
 
 ## Locally
 

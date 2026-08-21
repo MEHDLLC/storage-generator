@@ -156,7 +156,12 @@ ship a shape nobody chose.
 Two workflows: `ci.yml` (tests, then a smoke build and verify on every push)
 and `catalogue.yml` (plan into a matrix, build the chunks in parallel, collect
 and publish). Run the second from the Actions tab with a limit for "build me N
-items", and optionally a tag to release under.
+items", and `publish: yes` to cut a GitHub release.
+
+The release tag names the product line rather than the repo, and comes out of
+`catalogue.json` so it cannot drift from what was built —
+`storage-shelving-v0.1.0`. A run narrowed by `--limit` or `--generator` is
+refused rather than published under a name that claims the whole catalogue.
 
 See [docs/pipeline.md](docs/pipeline.md) for the whole thing.
 

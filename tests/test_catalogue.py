@@ -97,7 +97,7 @@ class Rejecting(unittest.TestCase):
 
 class Selecting(unittest.TestCase):
     def setUp(self):
-        self.variants = catalogue.expand(SWEEP)
+        self.variants = catalogue.expand(SWEEP).variants
 
     def test_a_limit_spreads_across_the_catalogue_by_default(self):
         picked = catalogue.select(self.variants, limit=3)
@@ -150,10 +150,56 @@ class Selecting(unittest.TestCase):
 class TheShippedCatalogue(unittest.TestCase):
     def test_it_expands_and_every_variant_validates(self):
         path = Path(__file__).resolve().parents[1] / "catalogue.json"
-        variants = catalogue.load(path)
-        self.assertGreater(len(variants), 5)
-        for variant in variants:
+        loaded = catalogue.load(path)
+        self.assertGreater(len(loaded), 5)
+        for variant in loaded.variants:
             catalogue.validate(variant, str(path))
+
+    def test_it_names_the_release_it_produces(self):
+        path = Path(__file__).resolve().parents[1] / "catalogue.json"
+        release = catalogue.load(path).release
+        self.assertIsNotNone(release, "the shipped catalogue should be nameable")
+        self.assertEqual(release.tag, f"{release.name}-v{release.version}")
+        self.assertTrue(release.summary)
+
+
+class ReleaseNaming(unittest.TestCase):
+    """The tag names the product line, and becomes a git tag and a file name."""
+
+    def expand_with(self, **release):
+        return catalogue.expand({
+            "release": release,
+            "items": [{"name": "g", "generator": "fit-gauge"}],
+        })
+
+    def test_a_tag_is_the_name_and_the_version(self):
+        release = self.expand_with(
+            name="storage-shelving", version="1.2.3", title="Storage Shelving"
+        ).release
+        self.assertEqual(release.tag, "storage-shelving-v1.2.3")
+        self.assertEqual(release.display, "Storage Shelving v1.2.3")
+
+    def test_a_catalogue_need_not_declare_one(self):
+        self.assertIsNone(catalogue.expand(
+            {"items": [{"name": "g", "generator": "fit-gauge"}]}).release)
+
+    def test_a_name_that_is_not_safe_in_a_tag_is_refused(self):
+        for bad in ("Storage Shelving", "storage_shelving", "-leading",
+                    "trailing-", "storage--shelving"):
+            with self.subTest(name=bad):
+                with self.assertRaises(CatalogueError):
+                    self.expand_with(name=bad, version="1.0.0", title="x")
+
+    def test_a_version_that_is_not_three_numbers_is_refused(self):
+        for bad in ("1.0", "v1.0.0", "1.0.0-rc1", "latest"):
+            with self.subTest(version=bad):
+                with self.assertRaises(CatalogueError):
+                    self.expand_with(name="ok", version=bad, title="x")
+
+    def test_a_release_missing_a_field_says_which(self):
+        with self.assertRaises(CatalogueError) as caught:
+            self.expand_with(name="ok", version="1.0.0")
+        self.assertIn("title", str(caught.exception))
 
 
 def run_cli(argv):
@@ -171,6 +217,8 @@ class Commands(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.catalogue = self.root / "catalogue.json"
         self.catalogue.write_text(json.dumps({
+            "release": {"name": "kit", "version": "2.0.0", "title": "Test Kit",
+                        "summary": "A catalogue used by the tests."},
             "items": [{"name": "gauge", "generator": "fit-gauge",
                        "options": {"rail_sample": False}}],
             "sweeps": [{
@@ -250,6 +298,57 @@ class Commands(unittest.TestCase):
         stl.write_bytes(bytes(data))
         code, _ = run_cli(["verify", str(out)])
         self.assertEqual(code, 1)
+
+    def test_release_emit_names_the_tag_and_flags_a_partial_run(self):
+        full = json.loads(run_cli([
+            "plan", "--catalogue", str(self.catalogue), "--emit", "release",
+        ])[1])
+        self.assertEqual(full["tag"], "kit-v2.0.0")
+        self.assertEqual(full["display"], "Test Kit v2.0.0")
+        self.assertTrue(full["complete"])
+        self.assertEqual(full["planned"], full["total"])
+
+        partial = json.loads(run_cli([
+            "plan", "--catalogue", str(self.catalogue), "--limit", "2",
+            "--emit", "release",
+        ])[1])
+        self.assertFalse(
+            partial["complete"],
+            "a limited run must not claim to be the whole catalogue",
+        )
+
+    def test_release_emit_needs_a_release_block(self):
+        bare = self.root / "bare.json"
+        bare.write_text(json.dumps({
+            "items": [{"name": "g", "generator": "fit-gauge"}]}))
+        code, output = run_cli(["plan", "--catalogue", str(bare),
+                                "--emit", "release"])
+        self.assertEqual(code, 2)
+        self.assertIn("no 'release' block", output)
+
+    def test_notes_are_built_from_what_was_written(self):
+        out = self.root / "out"
+        run_cli(["batch", "--catalogue", str(self.catalogue), "--out", str(out),
+                 "--no-preview"])
+        run_cli(["verify", str(out), "--json", str(out / "verify.json")])
+        code, _ = run_cli([
+            "notes", str(out), "--catalogue", str(self.catalogue),
+            "--verify", str(out / "verify.json"),
+        ])
+        self.assertEqual(code, 0)
+        notes = (out / "RELEASE-NOTES.md").read_text()
+        self.assertIn("# Test Kit v2.0.0", notes)
+        self.assertIn("**5 models**", notes)
+        self.assertIn("| **Failed** | **0** |", notes)
+        self.assertIn("Print the fit gauge first", notes)
+
+    def test_notes_need_an_index_first(self):
+        empty = self.root / "empty"
+        empty.mkdir()
+        code, output = run_cli(["notes", str(empty), "--catalogue",
+                                str(self.catalogue)])
+        self.assertEqual(code, 2)
+        self.assertIn("index.json", output)
 
     def test_index_can_be_rebuilt_over_merged_chunks(self):
         out = self.root / "out"

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -35,11 +36,59 @@ class Variant:
                 "options": dict(self.options)}
 
 
+# A release name is used as a git tag and a file name, so keep it to the
+# characters that are safe in both.
+_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+
+
+@dataclass(frozen=True)
+class Release:
+    """What to call the thing this catalogue produces, when publishing it.
+
+    The tag names the product line rather than the repository, because the
+    repository will eventually hold several: a run that builds bin racks and
+    fit gauges is a shelving release, not a "storage-generator" release.
+    """
+
+    name: str
+    version: str
+    title: str
+    summary: str = ""
+
+    @property
+    def tag(self) -> str:
+        return f"{self.name}-v{self.version}"
+
+    @property
+    def display(self) -> str:
+        return f"{self.title} v{self.version}"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"name": self.name, "version": self.version,
+                "title": self.title, "summary": self.summary,
+                "tag": self.tag, "display": self.display}
+
+
+@dataclass(frozen=True)
+class Catalogue:
+    """Everything a catalogue file says: what to build, and what to call it."""
+
+    variants: list[Variant]
+    release: Release | None = None
+
+    def __iter__(self):
+        return iter(self.variants)
+
+    def __len__(self) -> int:
+        return len(self.variants)
+
+
 class CatalogueError(ValueError):
     """Raised when a catalogue cannot be turned into runnable variants."""
 
 
-def load(path: Path) -> list[Variant]:
+def load(path: Path) -> Catalogue:
     """Read a catalogue file and expand it into validated variants."""
     try:
         raw = json.loads(Path(path).read_text())
@@ -50,7 +99,7 @@ def load(path: Path) -> list[Variant]:
     return expand(raw, source=str(path))
 
 
-def expand(raw: dict[str, Any], source: str = "catalogue") -> list[Variant]:
+def expand(raw: dict[str, Any], source: str = "catalogue") -> Catalogue:
     if not isinstance(raw, dict):
         raise CatalogueError(f"{source}: expected an object at the top level")
 
@@ -75,7 +124,34 @@ def expand(raw: dict[str, Any], source: str = "catalogue") -> list[Variant]:
 
     for variant in variants:
         validate(variant, source)
-    return variants
+    return Catalogue(variants, _one_release(raw.get("release"), source))
+
+
+def _one_release(block: Any, source: str) -> Release | None:
+    if block is None:
+        return None
+    if not isinstance(block, dict):
+        raise CatalogueError(f"{source}: 'release' must be an object")
+
+    missing = [k for k in ("name", "version", "title") if not block.get(k)]
+    if missing:
+        raise CatalogueError(
+            f"{source}: release is missing " + ", ".join(missing)
+        )
+    name, version = str(block["name"]), str(block["version"])
+    if not _NAME_RE.match(name):
+        raise CatalogueError(
+            f"{source}: release name {name!r} becomes a git tag and a file "
+            "name; use lower-case words joined by hyphens, like "
+            "'storage-shelving'."
+        )
+    if not _VERSION_RE.match(version):
+        raise CatalogueError(
+            f"{source}: release version {version!r} should be three numbers, "
+            "like '0.1.0'."
+        )
+    return Release(name=name, version=version, title=str(block["title"]),
+                   summary=str(block.get("summary", "")))
 
 
 def validate(variant: Variant, source: str = "catalogue") -> None:
