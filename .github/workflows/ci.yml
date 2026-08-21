@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests and smoke build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      # Pure Python and numpy. No OpenSCAD, no virtual display: the geometry
+      # comes from manifold3d and the previews from a software rasteriser, so
+      # nothing here needs a GPU or an X server.
+      - name: Install
+        run: pip install -e .
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Catalogue expands and every variant validates
+        run: |
+          storagegen plan --emit table
+          echo "$(storagegen plan --emit count) variants" >> "$GITHUB_STEP_SUMMARY"
+
+      # A spread of four covers both generators and several patterns without
+      # paying for the whole catalogue on every push.
+      - name: Smoke build
+        run: storagegen batch --limit 4 --out out
+
+      - name: Verify the files that were written
+        run: storagegen verify out --json out/verify.json
+
+      - name: Summarise
+        if: always()
+        run: cat out/INDEX.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-build
+          path: out/
+          retention-days: 7

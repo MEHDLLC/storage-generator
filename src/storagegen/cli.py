@@ -13,11 +13,15 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
+from . import catalogue as catalogue_module
 from . import generator as registry
-from . import runner
+from . import runner, verify
+from .catalogue import CatalogueError, Variant
 from .options import OptionError, merge_sequence
 from .presets import BIN_PRESETS
 from .units import to_inch
+
+DEFAULT_CATALOGUE = "catalogue.json"
 
 # Importing the modules is what registers the generators.
 from .generators import bin_shelf, fit_gauge  # noqa: F401
@@ -36,6 +40,52 @@ def main(argv: Sequence[str] | None = None) -> int:
     show = sub.add_parser("options", help="show one generator's options")
     show.add_argument("generator")
 
+    schema = sub.add_parser(
+        "schema",
+        help="every variable of every generator, as JSON",
+        description="Machine-readable declaration of every option, so a "
+                    "pipeline can discover the variables instead of "
+                    "duplicating them.",
+    )
+    schema.add_argument("generator", nargs="?")
+
+    plan = sub.add_parser(
+        "plan", help="expand a catalogue into the runs it describes")
+    _add_selection(plan)
+    plan.add_argument("--chunk-size", type=int, default=8, metavar="N",
+                      help="variants per job when emitting a build matrix")
+    plan.add_argument("--emit", default="table",
+                      choices=("table", "names", "json", "matrix", "count"),
+                      help="shape of the output")
+
+    batch = sub.add_parser("batch", help="build every run a catalogue selects")
+    _add_selection(batch)
+    batch.add_argument("--chunk", type=int, metavar="I",
+                       help="build only this chunk (with --chunks)")
+    batch.add_argument("--chunks", type=int, metavar="K",
+                       help="total number of chunks the catalogue is split into")
+    batch.add_argument("--out", default="out", metavar="DIR")
+    batch.add_argument("--format", default="stl,3mf", metavar="LIST")
+    batch.add_argument("--no-preview", action="store_true")
+    batch.add_argument("--no-verify", action="store_true",
+                       help="skip re-reading each written file")
+    batch.add_argument("--keep-going", action="store_true",
+                       help="finish the batch and report failures at the end")
+
+    index = sub.add_parser(
+        "index", help="write INDEX.md and index.json for a directory of runs")
+    index.add_argument("directory", metavar="DIR")
+
+    check = sub.add_parser(
+        "verify", help="re-read written STL/3MF files and check them")
+    check.add_argument("paths", nargs="+", metavar="PATH")
+    check.add_argument("--strict", action="store_true",
+                       help="treat warnings as failures too")
+    check.add_argument("--allow-multi-part", action="store_true",
+                       help="do not require each mesh to be a single piece")
+    check.add_argument("--json", dest="as_json", metavar="FILE",
+                       help="also write a machine-readable report here")
+
     for key, generator in registry.all_generators().items():
         build = sub.add_parser(
             key, help=generator.summary, description=generator.summary,
@@ -52,7 +102,36 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _list_bins()
     if args.command == "options":
         return _show_options(args.generator)
+    if args.command == "schema":
+        return _schema(args.generator)
+    if args.command == "plan":
+        return _plan(args)
+    if args.command == "batch":
+        return _batch(args)
+    if args.command == "index":
+        root = Path(args.directory)
+        if not root.is_dir():
+            print(f"error: no such directory: {root}", file=sys.stderr)
+            return 2
+        count = _write_index(root)
+        print(f"indexed {count} model(s) in {root / 'INDEX.md'}")
+        return 0 if count else 1
+    if args.command == "verify":
+        return _verify(args)
     return _build(args)
+
+
+def _add_selection(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_argument_group("Selection")
+    group.add_argument("--catalogue", default=DEFAULT_CATALOGUE, metavar="FILE")
+    group.add_argument("--generator", metavar="KEY",
+                       help="only variants built by this generator")
+    group.add_argument("--only", metavar="NAMES",
+                       help="comma separated variant names")
+    group.add_argument("--limit", type=int, metavar="N",
+                       help="build at most this many")
+    group.add_argument("--pick", default="spread", choices=("spread", "first"),
+                       help="how --limit chooses: evenly spread, or the first N")
 
 
 def _add_common(parser: argparse.ArgumentParser) -> None:
@@ -110,6 +189,244 @@ def _show_options(key: str) -> int:
                      if option.choices else ""))
         print()
     return 0
+
+
+def _schema(key: str | None) -> int:
+    generators = (
+        {key: registry.get(key)} if key else registry.all_generators()
+    )
+    payload = {
+        "generators": {
+            name: {
+                "title": gen.title,
+                "summary": gen.summary,
+                "tags": list(gen.tags),
+                "options": [
+                    {
+                        "name": option.name,
+                        "flag": option.flag,
+                        "kind": option.kind,
+                        "default": option.default,
+                        "default_note": option.default_note or None,
+                        "choices": list(option.choices) or None,
+                        "minimum": option.minimum,
+                        "maximum": option.maximum,
+                        "unit": option.unit.strip() or None,
+                        "group": option.group,
+                        "help": option.help,
+                    }
+                    for option in gen.options
+                ],
+            }
+            for name, gen in generators.items()
+        },
+        "bins": {name: spec.to_dict() for name, spec in BIN_PRESETS.items()},
+    }
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def _selected(args: argparse.Namespace) -> list[Variant]:
+    variants = catalogue_module.load(Path(args.catalogue))
+    return catalogue_module.select(
+        variants,
+        generator=getattr(args, "generator", None),
+        only=[n.strip() for n in args.only.split(",")] if args.only else None,
+        limit=args.limit,
+        pick=args.pick,
+        chunk=getattr(args, "chunk", None),
+        chunks=getattr(args, "chunks", None),
+    )
+
+
+def _plan(args: argparse.Namespace) -> int:
+    try:
+        chosen = _selected(args)
+    except CatalogueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    if args.emit == "count":
+        print(len(chosen))
+    elif args.emit == "names":
+        for variant in chosen:
+            print(variant.name)
+    elif args.emit == "json":
+        print(json.dumps([v.to_dict() for v in chosen], indent=2))
+    elif args.emit == "matrix":
+        chunks = catalogue_module.chunk_count(len(chosen), args.chunk_size)
+        print(json.dumps([
+            {"chunk": index, "chunks": chunks,
+             "count": len(chosen[index::chunks])}
+            for index in range(chunks)
+        ]))
+    else:
+        print(f"{len(chosen)} variants from {args.catalogue}\n")
+        for variant in chosen:
+            shown = ", ".join(
+                f"{k}={v}" for k, v in sorted(variant.options.items())
+            )
+            print(f"  {variant.name:<44} {variant.generator:<11} {shown}")
+    return 0
+
+
+def _batch(args: argparse.Namespace) -> int:
+    try:
+        chosen = _selected(args)
+    except CatalogueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    root = Path(args.out)
+    formats = [f.strip() for f in args.format.split(",") if f.strip()]
+    built: list[dict[str, Any]] = []
+    failures: list[tuple[str, str]] = []
+
+    print(f"building {len(chosen)} variant(s) into {root}\n")
+    for position, variant in enumerate(chosen, start=1):
+        label = f"[{position}/{len(chosen)}] {variant.name}"
+        try:
+            result = runner.run(
+                registry.get(variant.generator), variant.options,
+                out_root=root, formats=formats,
+                with_preview=not args.no_preview, slug=variant.name,
+            )
+            reports = [] if args.no_verify else verify.verify_directory(
+                result.directory, check_manifest=True
+            )
+            broken = [r for r in reports if r.problems]
+            if broken:
+                detail = "; ".join(
+                    f"{r.name}: {p}" for r in broken for p in r.problems
+                )
+                raise ValueError(f"written files failed verification: {detail}")
+
+            grams = result.manifest["estimated_grams_solid"]
+            print(f"{label}: {result.manifest['listing']['title'][:70]}")
+            print(f"{'':4}{len(result.files)} files, about {grams:.0f} g"
+                  + (f", {len(reports)} mesh(es) verified" if reports else ""))
+            built.append({
+                "name": variant.name,
+                "generator": variant.generator,
+                "title": result.manifest["listing"]["title"],
+                "directory": str(result.directory),
+                "grams": grams,
+                "parts": result.manifest["parts"],
+                "warnings": result.warnings,
+                "mesh_reports": [r.to_dict() for r in reports],
+            })
+        except (OptionError, CatalogueError, ValueError, KeyError) as exc:
+            print(f"{label}: FAILED - {exc}", file=sys.stderr)
+            failures.append((variant.name, str(exc)))
+            if not args.keep_going:
+                return 1
+
+    indexed = _write_index(root, failures)
+    print(f"\nbuilt {len(built)} of {len(chosen)}; "
+          f"{indexed} model(s) indexed in {root / 'INDEX.md'}")
+    if failures:
+        print(f"{len(failures)} failed:", file=sys.stderr)
+        for name, reason in failures:
+            print(f"  {name}: {reason}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _write_index(root: Path, failures: Sequence[tuple[str, str]] = ()) -> int:
+    """Summarise every run under `root` by reading the manifests it left.
+
+    Built from what is on disk rather than from what this process happened to
+    make, so a job that merges chunks from several machines indexes them the
+    same way a single run does.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    entries = []
+    for manifest_path in sorted(root.rglob("manifest.json")):
+        manifest = json.loads(manifest_path.read_text())
+        entries.append({
+            "name": manifest["slug"],
+            "generator": manifest["generator"],
+            "title": manifest["listing"]["title"],
+            "directory": str(manifest_path.parent.relative_to(root)),
+            "grams": manifest["estimated_grams_solid"],
+            "options_hash": manifest["options_hash"],
+            "parts": manifest["parts"],
+            "warnings": manifest["warnings"],
+        })
+
+    (root / "index.json").write_text(
+        json.dumps(
+            {"built": entries,
+             "failed": [{"name": n, "reason": r} for n, r in failures]},
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+
+    lines = [f"# {len(entries)} models", ""]
+    if failures:
+        lines += [f"**{len(failures)} failed to build:**", ""]
+        lines += [f"- `{name}` - {reason}" for name, reason in failures]
+        lines.append("")
+    lines += ["| Model | Generator | Size (mm) | Plastic | Notes |",
+              "|---|---|---|---|---|"]
+    for entry in entries:
+        size = entry["parts"][0]["size_mm"] if entry["parts"] else [0, 0, 0]
+        lines.append(
+            f"| [{entry['name']}]({entry['directory']}/) | {entry['generator']} | "
+            + " x ".join(f"{v:.0f}" for v in size)
+            + f" | {entry['grams']:.0f} g | "
+            + ("; ".join(entry["warnings"]) if entry["warnings"] else "-")
+            + " |"
+        )
+    (root / "INDEX.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return len(entries)
+
+
+def _verify(args: argparse.Namespace) -> int:
+    reports: list[verify.MeshReport] = []
+    try:
+        for raw in args.paths:
+            path = Path(raw)
+            if path.is_dir():
+                reports.extend(verify.verify_directory(
+                    path, expect_one_piece=not args.allow_multi_part))
+            elif path.exists():
+                reports.extend(verify.verify_file(
+                    path, expect_one_piece=not args.allow_multi_part))
+            else:
+                print(f"error: no such path: {path}", file=sys.stderr)
+                return 2
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if not reports:
+        print("error: found no STL or 3MF files to check", file=sys.stderr)
+        return 2
+
+    for report in reports:
+        print(report.summary())
+        for warning in report.warnings:
+            print(f"      ~ {warning}")
+        for problem in report.problems:
+            print(f"      ! {problem}")
+
+    if args.as_json:
+        Path(args.as_json).write_text(
+            json.dumps([r.to_dict() for r in reports], indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    failed = [r for r in reports if r.problems]
+    warned = [r for r in reports if r.warnings and not r.problems]
+    print(
+        f"\n{len(reports)} mesh(es): {len(reports) - len(failed) - len(warned)} "
+        f"clean, {len(warned)} with warnings, {len(failed)} failed"
+    )
+    if failed:
+        return 1
+    return 1 if (args.strict and warned) else 0
 
 
 def _build(args: argparse.Namespace) -> int:

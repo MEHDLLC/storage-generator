@@ -138,7 +138,7 @@ def _ensure_ccw(profile: Iterable[Point2]) -> list[Point2]:
     looks exactly like a part that was never added, so every extrusion helper
     normalises the winding here instead of trusting its caller.
     """
-    points = [(float(x), float(y)) for x, y in profile]
+    points = _dedupe([(float(x), float(y)) for x, y in profile])
     if len(points) < 3:
         raise ValueError(f"a profile needs at least 3 points, got {len(points)}")
     area = signed_area(points)
@@ -204,6 +204,12 @@ def chamfered_rect(x0: float, x1: float, z0: float, z1: float,
 
 
 def _dedupe(points: Sequence[Point2]) -> list[Point2]:
+    """Drop repeated points, including the wrap-around from last back to first.
+
+    A chamfer that shrinks to nothing leaves two coincident corners. Extruding
+    that gives a zero-area sliver triangle: harmless to look at, but it fails
+    every mesh validator and there is no reason to ship one.
+    """
     out: list[Point2] = []
     for p in points:
         if not out or abs(p[0] - out[-1][0]) > EPS or abs(p[1] - out[-1][1]) > EPS:

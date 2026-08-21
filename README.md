@@ -131,11 +131,42 @@ PYTHONPATH=src python3 -m storagegen.cli bin-shelf --bin generic-tote \
 A bin worth keeping belongs in `src/storagegen/presets.py`, where each
 dimension records whether it came from a specification or an estimate.
 
+## Building a batch in CI
+
+Four commands cover it, and GitHub Actions just arranges them:
+
+```bash
+storagegen schema              # every variable, as JSON
+storagegen plan                # what catalogue.json says to build
+storagegen batch --chunk 0 --chunks 4 --out out
+storagegen verify out          # re-read the written files and check them
+```
+
+`catalogue.json` lists the products worth building -- one-off `items`, and
+`sweeps` that expand a few axes into every combination. Every variant is
+validated against its generator's own option declaration when the catalogue is
+read, so a typo fails in about a second rather than in two hundred build jobs.
+
+`verify` reads the bytes back off disk and works out the topology from
+scratch: edge use, winding, signed volume, connected components, declared
+units, and agreement with `manifest.json`. It does not repair anything. A
+model that fails is a bug upstream, and filling a hole automatically would
+ship a shape nobody chose.
+
+Two workflows: `ci.yml` (tests, then a smoke build and verify on every push)
+and `catalogue.yml` (plan into a matrix, build the chunks in parallel, collect
+and publish). Run the second from the Actions tab with a limit for "build me N
+items", and optionally a tag to release under.
+
+See [docs/pipeline.md](docs/pipeline.md) for the whole thing.
+
 ## Development
 
 ```bash
-make test     # 101 tests, no network, a few seconds
+make test     # 141 tests, no network, a few seconds
 make patterns # rebuild the pattern comparison image
+make batch    # build the whole catalogue into out/
+make verify   # check whatever is in out/
 make demo     # build one of each into out/
 ```
 
@@ -151,6 +182,8 @@ the print bed:
 - a rack **stacked on itself** seats without its ribs fouling their sockets
 - each step of the fit gauge really is the width it claims
 - every cut-out is printable without support, checked edge by edge
+- deliberately broken files -- truncated, holed, inside out, split in two --
+  are each rejected with the right complaint
 - the description never quotes a dimension the model does not have
 
 ## Roadmap

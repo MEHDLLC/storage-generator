@@ -1,0 +1,183 @@
+name: Build catalogue
+
+# Builds the products listed in catalogue.json, in parallel, and publishes the
+# ones that pass validation.
+#
+# The variables are not restated here. `storagegen plan` reads catalogue.json
+# and checks every variant against each generator's own option declaration, so
+# a typo fails in the plan job in seconds rather than in every build job.
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "How many items to build (blank builds everything)"
+        required: false
+        default: ""
+      pick:
+        description: "Which ones, when limited"
+        required: false
+        default: spread
+        type: choice
+        options: [spread, first]
+      generator:
+        description: "Only this generator (blank for all)"
+        required: false
+        default: ""
+      chunk_size:
+        description: "Items per parallel job"
+        required: false
+        default: "8"
+      release_tag:
+        description: "Publish the result as a release under this tag (blank to skip)"
+        required: false
+        default: ""
+  push:
+    paths:
+      - catalogue.json
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      count: ${{ steps.plan.outputs.count }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: pip install -e .
+
+      - name: Expand and validate the catalogue
+        id: plan
+        env:
+          LIMIT: ${{ inputs.limit }}
+          PICK: ${{ inputs.pick || 'spread' }}
+          GENERATOR: ${{ inputs.generator }}
+          CHUNK_SIZE: ${{ inputs.chunk_size || '8' }}
+        run: |
+          set -euo pipefail
+          ARGS=(--pick "${PICK}" --chunk-size "${CHUNK_SIZE}")
+          [ -n "${LIMIT}" ] && ARGS+=(--limit "${LIMIT}")
+          [ -n "${GENERATOR}" ] && ARGS+=(--generator "${GENERATOR}")
+
+          storagegen plan "${ARGS[@]}" --emit table
+          COUNT=$(storagegen plan "${ARGS[@]}" --emit count)
+          MATRIX=$(storagegen plan "${ARGS[@]}" --emit matrix)
+          echo "count=${COUNT}" >> "$GITHUB_OUTPUT"
+          echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
+          echo "Planning ${COUNT} items across $(echo "${MATRIX}" | python -c 'import json,sys; print(len(json.load(sys.stdin)))') jobs" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Build ${{ matrix.chunk }}/${{ matrix.chunks }}
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      # One bad variant should not cancel the rest; the collect job reports it.
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: pip install -e .
+
+      - name: Build this chunk
+        env:
+          LIMIT: ${{ inputs.limit }}
+          PICK: ${{ inputs.pick || 'spread' }}
+          GENERATOR: ${{ inputs.generator }}
+        run: |
+          set -euo pipefail
+          ARGS=(--pick "${PICK}" --chunk ${{ matrix.chunk }} --chunks ${{ matrix.chunks }})
+          [ -n "${LIMIT}" ] && ARGS+=(--limit "${LIMIT}")
+          [ -n "${GENERATOR}" ] && ARGS+=(--generator "${GENERATOR}")
+          # `batch` re-reads every file it writes and fails on a bad mesh.
+          # --keep-going finishes the chunk first so one failure does not hide
+          # the others.
+          storagegen batch "${ARGS[@]}" --out out --keep-going
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: models-chunk-${{ matrix.chunk }}
+          path: out/
+          retention-days: 14
+
+  collect:
+    name: Collect and publish
+    needs: [plan, build]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: pip install -e .
+
+      - name: Gather every chunk
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+          pattern: models-chunk-*
+          merge-multiple: true
+
+      # Chunk-level index files describe one chunk each; drop them and rebuild
+      # one index over everything.
+      - name: Re-index
+        run: |
+          set -euo pipefail
+          rm -f release/INDEX.md release/index.json
+          storagegen index release
+
+      # Validated once per chunk already; done again here on the merged set,
+      # because what ships is this directory, not what any one job had.
+      - name: Verify everything that shipped
+        run: storagegen verify release --json release/verify.json
+
+      - name: Summarise
+        if: always()
+        run: |
+          cat release/INDEX.md >> "$GITHUB_STEP_SUMMARY" || true
+          echo "Planned ${{ needs.plan.outputs.count }} items; build result: ${{ needs.build.result }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: models
+          path: release/
+          retention-days: 90
+
+      - name: Publish a release
+        if: inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          cd release && zip -qr "../models-${TAG}.zip" . && cd ..
+          gh release create "${TAG}" "models-${TAG}.zip" \
+            --title "Models ${TAG}" \
+            --notes-file release/INDEX.md \
+            || gh release upload "${TAG}" "models-${TAG}.zip" --clobber
+
+      - name: Fail if any build job failed
+        if: needs.build.result != 'success'
+        run: |
+          echo "One or more build chunks failed; see the build jobs above." >&2
+          exit 1

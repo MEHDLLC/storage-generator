@@ -316,21 +316,24 @@ def _rail_sample(spec: BinSpec, opt: dict[str, Any]) -> geom.Solid:
     back = geom.box([width, wall, height], at=[0.0, depth - wall, 0.0])
 
     left_face, right_face = wall, width - wall
-    chamfer = min(rail_t, reach) * 0.999
+    chamfer = min(rail_t, reach)
+    # Reach into the side panels rather than stopping on their faces: solids
+    # that meet on exactly one plane leave slivers along the seam.
+    embed = 0.5
     rails = [
         geom.prism_y(
             [
-                (left_face, rail_top - rail_t),
+                (left_face - embed, rail_top - rail_t),
                 (left_face + reach - chamfer, rail_top - chamfer),
                 (left_face + reach, rail_top),
-                (left_face, rail_top),
+                (left_face - embed, rail_top),
             ],
             0.0, depth,
         ),
         geom.prism_y(
             [
-                (right_face, rail_top - rail_t),
-                (right_face, rail_top),
+                (right_face + embed, rail_top - rail_t),
+                (right_face + embed, rail_top),
                 (right_face - reach, rail_top),
                 (right_face - reach + chamfer, rail_top - chamfer),
             ],

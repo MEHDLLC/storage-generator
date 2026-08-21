@@ -1,6 +1,6 @@
 PYTHON ?= python3
 
-.PHONY: test demo patterns clean
+.PHONY: test demo patterns batch verify clean
 
 test:
 	$(PYTHON) -m unittest discover -s tests -v
@@ -11,6 +11,12 @@ demo:
 
 patterns:
 	$(PYTHON) tools/pattern_sheet.py
+
+batch:
+	PYTHONPATH=src $(PYTHON) -m storagegen.cli batch --out out --keep-going
+
+verify:
+	PYTHONPATH=src $(PYTHON) -m storagegen.cli verify out
 
 clean:
 	rm -rf out

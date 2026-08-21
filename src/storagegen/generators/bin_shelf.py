@@ -46,6 +46,10 @@ RIB_FIT_GAP = 0.35          # per side, stacking rib in its socket
 RIM_SIDE_GAP = 1.0          # minimum air between the bin's rim and a side panel
 MIN_BEARING = 0.8           # least rim-on-rail contact per side worth shipping
 RIB_EMBED = 0.6             # how far mating features sink into their parent
+# Two solids that meet on exactly the same plane give the boolean nothing to
+# cut against, and it emits slivers along the seam. Everything that joins
+# something else is sunk into it by this much instead.
+EMBED = 0.5
 FLANGE_MIN_THICKNESS = 4.0  # the hanger flange carries the whole rack
 # The widest flat span left at the top of a window. Short enough that every
 # slicer bridges it cleanly, long enough that the window is not a triangle.
@@ -486,6 +490,7 @@ def _assemble(spec: BinSpec, layout: Layout, opt: dict[str, Any]) -> geom.Solid:
     body = geom.union(solids)
 
     cutters: list[geom.Solid] = []
+    cutters += _rail_lead_ins(layout, opt)
     cutters += _back_cutters(spec, layout, opt)
     cutters += _side_cutters(spec, layout, opt)
     cutters += _plate_cutters(spec, layout, opt, "base", -1.0,
@@ -534,64 +539,97 @@ def _side_panels(layout: Layout, opt: dict[str, Any]) -> list[geom.Solid]:
     ]
 
 
-def _rails(layout: Layout, opt: dict[str, Any]) -> list[geom.Solid]:
-    out: list[geom.Solid] = []
+def _rail_profile(layout: Layout, opt: dict[str, Any], column: int,
+                  rail_top: float, side: str,
+                  stop_height: float = 0.0) -> list[tuple[float, float]]:
+    """(x, z) cross-section of one rail, optionally carrying a front stop.
+
+    The underside is taken back at 45 degrees, which is what lets a ledge
+    cantilever into the opening with nothing beneath it. The rail reaches
+    EMBED into its side panel rather than stopping on the panel's face, so the
+    boolean has something to cut against instead of two coincident planes.
+
+    `stop_height` raises the same profile into a front stop. Building the stop
+    as part of the rail rather than as a box sitting on it matters: a separate
+    box wide enough to catch the bin's rim meets the rail's tip along exactly
+    one line, and an edge shared by four triangles is non-manifold the moment
+    anything welds vertices by position -- which every slicer does.
+    """
     thickness = opt["rail_thickness"]
     reach = opt["rail_width"]
-    # The flare shifts the rail mouth outward into the side panel, so it
-    # must not be able to reach the panel's outer face.
-    lead = min(opt["rail_lead_in"], max(opt["wall"] - 0.4, 0.0))
+    chamfer = min(thickness, reach)
+    low = rail_top - thickness
+    high = rail_top + stop_height
 
+    if side == "left":
+        outer = layout.cell_x0(column) - EMBED
+        tip = layout.cell_x0(column) + reach
+        profile = [(outer, high), (tip, high)]
+        if stop_height > 0:
+            profile.append((tip, rail_top))
+        profile += [(tip - chamfer, rail_top - chamfer), (outer, low)]
+        return profile
+
+    outer = layout.cell_x0(column) + layout.cell_inner + EMBED
+    tip = layout.cell_x0(column) + layout.cell_inner - reach
+    profile = [(outer, high), (outer, low), (tip + chamfer, rail_top - chamfer)]
+    if stop_height > 0:
+        profile.append((tip, rail_top))
+    profile.append((tip, high))
+    return profile
+
+
+def _rails(layout: Layout, opt: dict[str, Any]) -> list[geom.Solid]:
+    """The pair of ledges each bin hangs from, one down each side of a bay."""
+    out: list[geom.Solid] = []
     for column in range(opt["columns"]):
-        left_face = layout.cell_x0(column)                      # panel inner face
-        right_face = left_face + layout.cell_inner
         for rail_top in layout.rail_tops:
-            z0, z1 = rail_top - thickness, rail_top
-            chamfer = min(thickness, reach) * 0.999
-            # Left rail: solid from the panel face inward, undercut at 45.
-            left_profile = [
-                (left_face, z1),
-                (left_face + reach, z1),
-                (left_face + reach - chamfer, z1 - chamfer),
-                (left_face, z0),
-            ]
-            right_profile = [
-                (right_face, z1),
-                (right_face, z0),
-                (right_face - reach + chamfer, z1 - chamfer),
-                (right_face - reach, z1),
-            ]
-            for profile, direction in ((left_profile, 1.0), (right_profile, -1.0)):
-                out.extend(
-                    _rail_runs(profile, direction, layout, opt, lead, z0, z1)
-                )
+            for side in ("left", "right"):
+                profile = _rail_profile(layout, opt, column, rail_top, side)
+                out.extend(_rail_runs(profile, layout, opt))
     return out
 
 
-def _rail_runs(profile, direction: float, layout: Layout, opt: dict[str, Any],
-               lead: float, z0: float, z1: float) -> list[geom.Solid]:
-    """One rail, optionally split into end pads, with a flared mouth."""
-    segments: list[tuple[float, float]] = []
+def _rail_runs(profile, layout: Layout,
+               opt: dict[str, Any]) -> list[geom.Solid]:
+    """One rail, either continuous or reduced to a pad at each end."""
     if opt["rail_style"] == "pads":
         pad = min(opt["pad_length"], layout.depth / 2.0)
         segments = [(0.0, pad), (layout.depth - pad, layout.depth)]
     else:
         segments = [(0.0, layout.depth)]
+    return [geom.prism_y(profile, y0, y1) for y0, y1 in segments]
 
-    solids = [geom.prism_y(profile, y0, y1) for y0, y1 in segments]
 
-    if lead > 0:
-        # Flare the mouth: hull a thin slice of the rail at the front, shifted
-        # outward, to a slice at lead-in depth in its true position. A bin
-        # nudged off-centre is steered in instead of catching the rail tip.
-        depth = max(2.5 * lead, 6.0)
-        slice_thickness = 0.4
-        mouth = geom.prism_y(profile, 0.0, slice_thickness).translate(
-            [-direction * lead, 0.0, 0.0]
+def _rail_lead_ins(layout: Layout, opt: dict[str, Any]) -> list[geom.Solid]:
+    """Open the mouth of every rail so a bin steers itself in.
+
+    Taken out of the rail rather than added to it. Growing the flare as a
+    convex hull and unioning it on met neighbouring solids along single edges
+    and left pinches in the mesh; a wedge subtracted from a plain prism cannot.
+    """
+    lead = min(opt["rail_lead_in"], max(opt["wall"] - 0.4, 0.0))
+    if lead <= geom.EPS:
+        return []
+    depth = max(2.5 * lead, 6.0)
+    thickness = opt["rail_thickness"]
+    reach = opt["rail_width"]
+
+    out = []
+    for column in range(opt["columns"]):
+        left_tip = layout.cell_x0(column) + reach
+        right_tip = layout.cell_x0(column) + layout.cell_inner - reach
+        wedges = (
+            [(left_tip - lead, 0.0), (left_tip, 0.0), (left_tip, depth)],
+            [(right_tip + lead, 0.0), (right_tip, depth), (right_tip, 0.0)],
         )
-        inner = geom.prism_y(profile, depth, depth + slice_thickness)
-        solids.append(geom.Solid.batch_hull([mouth, inner]))
-    return solids
+        for rail_top in layout.rail_tops:
+            for wedge in wedges:
+                out.append(
+                    geom.prism_z(wedge, rail_top - thickness - 1.0,
+                                 rail_top + EMBED)
+                )
+    return out
 
 
 def _back_panel(layout: Layout, opt: dict[str, Any]) -> list[geom.Solid]:
@@ -740,25 +778,29 @@ def _front_stops(spec: BinSpec, layout: Layout,
     style = opt["front_stop"]
     if style == "none":
         return []
-    out = []
-    y0, y1 = 0.0, layout.front_t
     height = opt["label_height"] if style == "label" else opt["stop_height"]
+    y0, y1 = 0.0, layout.front_t
 
+    out = []
     for column in range(opt["columns"]):
-        left_face = layout.cell_x0(column)
-        right_face = left_face + layout.cell_inner
         for rail_top in layout.rail_tops:
             if style == "tabs":
-                spans = (
-                    (left_face, left_face + opt["rail_width"]),
-                    (right_face - opt["rail_width"], right_face),
-                )
-            else:
-                spans = ((left_face, right_face),)
-            for x0, x1 in spans:
-                out.append(
-                    geom.box([x1 - x0, y1 - y0, height], at=[x0, y0, rail_top])
-                )
+                # The stop is the rail, run up taller over its first few
+                # millimetres, so there is no seam between the two.
+                for side in ("left", "right"):
+                    out.append(geom.prism_y(
+                        _rail_profile(layout, opt, column, rail_top, side,
+                                      stop_height=height),
+                        y0, y1,
+                    ))
+                continue
+            # A continuous lip or label plate spans the whole bay, which buries
+            # both rail tips inside it rather than touching them.
+            left = layout.cell_x0(column)
+            out.append(geom.box(
+                [layout.cell_inner, y1 - y0, height + EMBED],
+                at=[left, y0, rail_top - EMBED],
+            ))
     return out
 
 
@@ -854,20 +896,23 @@ def _mount_flange(layout: Layout, opt: dict[str, Any]) -> list[geom.Solid]:
         return []
     thickness = _flange_thickness(opt)
     flange = geom.box(
-        [layout.width, thickness, layout.flange_height],
-        at=[0.0, layout.depth - thickness, layout.body_height],
+        [layout.width, thickness, layout.flange_height + EMBED],
+        at=[0.0, layout.depth - thickness, layout.body_height - EMBED],
     )
     # The flange is thicker than the back panel below it, so its inner face
     # would otherwise start in mid-air. Run a 45-degree gusset under it.
     step = thickness - layout.rear_t
     if step <= geom.EPS:
         return [flange]
+    # Run the gusset EMBED past the back panel's inner face rather than
+    # stopping on it, so the two overlap instead of sharing a plane.
     y_inner = layout.depth - thickness
+    reach = step + EMBED
     gusset = geom.prism_x(
         [
             (y_inner, layout.body_height),
-            (y_inner + step, layout.body_height),
-            (y_inner + step, layout.body_height - step),
+            (y_inner + reach, layout.body_height),
+            (y_inner + reach, layout.body_height - reach),
         ],
         0.0, layout.width,
     )
