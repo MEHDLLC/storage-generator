@@ -1,6 +1,6 @@
 PYTHON ?= python3
 
-.PHONY: test demo clean
+.PHONY: test demo patterns clean
 
 test:
 	$(PYTHON) -m unittest discover -s tests -v
@@ -8,6 +8,9 @@ test:
 demo:
 	PYTHONPATH=src $(PYTHON) -m storagegen.cli bin-shelf --out out
 	PYTHONPATH=src $(PYTHON) -m storagegen.cli fit-gauge --out out
+
+patterns:
+	$(PYTHON) tools/pattern_sheet.py
 
 clean:
 	rm -rf out

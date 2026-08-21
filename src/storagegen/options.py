@@ -28,6 +28,7 @@ class Option:
     unit: str = ""
     group: str = "General"
     listed: bool = True          # show in the listing's options table
+    default_note: str = ""       # what a default of None falls back to
 
     @property
     def flag(self) -> str:
@@ -66,7 +67,7 @@ class Option:
 
     def describe_default(self) -> str:
         if self.default is None:
-            return "from preset"
+            return self.default_note or "from preset"
         if self.kind == "bool":
             return "yes" if self.default else "no"
         if self.kind in ("int", "float"):

@@ -49,12 +49,27 @@ def render_scene(path: Path, parts: Sequence[Part],
     Context parts -- the bins a rack carries -- are drawn in a cooler, duller
     colour so a glance separates what you print from what you already own.
     """
-    layers = _layers(parts) + _layers(context, CONTEXT)
-    tiles = []
-    for _, azimuth, elevation in views:
-        tile = _render(layers, size * supersample, azimuth, elevation)
-        tiles.append(_downsample(tile, supersample) if supersample > 1 else tile)
+    tiles = [
+        scene_pixels(parts, context, size, azimuth, elevation, supersample)
+        for _, azimuth, elevation in views
+    ]
     _write_png(path, np.concatenate(tiles, axis=1))
+    return path
+
+
+def scene_pixels(parts: Sequence[Part], context: Sequence[Part] = (),
+                 size: int = 620, azimuth: float = 38.0,
+                 elevation: float = 26.0, supersample: int = 2) -> np.ndarray:
+    """One rendered view as a pixel array, for callers composing their own sheet."""
+    layers = _layers(parts) + _layers(context, CONTEXT)
+    pixels = _render(layers, size * supersample, azimuth, elevation)
+    return _downsample(pixels, supersample) if supersample > 1 else pixels
+
+
+def write_sheet(path: Path, rows: Sequence[Sequence[np.ndarray]]) -> Path:
+    """Stack rendered views into one contact sheet."""
+    _write_png(path, np.concatenate(
+        [np.concatenate(row, axis=1) for row in rows], axis=0))
     return path
 
 

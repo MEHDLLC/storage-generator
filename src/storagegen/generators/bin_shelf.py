@@ -33,7 +33,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from .. import geom
+from .. import geom, patterns
 from ..generator import BuildResult, Generator, register
 from ..mesh_io import Part, PartSet
 from ..options import Option, OptionSet, Report
@@ -50,6 +50,13 @@ FLANGE_MIN_THICKNESS = 4.0  # the hanger flange carries the whole rack
 # The widest flat span left at the top of a window. Short enough that every
 # slicer bridges it cleanly, long enough that the window is not a triangle.
 MAX_WINDOW_BRIDGE = 12.0
+# Every surface reads the same way: nothing there, solid, or cut with the
+# chosen pattern.
+SURFACES = ("cut", "solid", "open")
+# Material kept around a cut-out region, so the pattern never runs into a
+# rail, a corner or an edge.
+PATTERN_MARGIN = 9.0
+_SURFACE_NAMES = ("sides", "back", "base", "top")
 
 
 OPTIONS = OptionSet([
@@ -95,16 +102,14 @@ OPTIONS = OptionSet([
            unit=" mm", minimum=8, maximum=200, group="Structure"),
     Option("rail_lead_in", 1.5, "How far the rail mouths flare open at the front",
            unit=" mm", minimum=0.0, maximum=8, group="Structure"),
-    Option("back", "windowed",
+    Option("back", "cut",
            "Back of the rack. This is the member that ties the two sides "
            "together and stops the bins at a consistent depth.",
-           kind="choice", choices=("windowed", "panel", "open"),
-           group="Structure"),
+           kind="choice", choices=SURFACES, group="Structure"),
     Option("back_thickness", 2.4, "Back panel thickness", unit=" mm",
            minimum=1.2, maximum=12, group="Structure"),
-    Option("sides", "windowed",
-           "Side panels: cut away between levels, or left solid",
-           kind="choice", choices=("windowed", "solid"), group="Structure"),
+    Option("sides", "cut", "Side panels", kind="choice", choices=("cut", "solid"),
+           group="Structure"),
     Option("front_stop", "tabs",
            "Front retention: none, corner tabs, a full lip, or a label plate",
            kind="choice", choices=("none", "tabs", "lip", "label"),
@@ -113,16 +118,28 @@ OPTIONS = OptionSet([
            unit=" mm", minimum=1.0, maximum=60, group="Structure"),
     Option("label_height", 18.0, "Height of the front plate when front_stop=label",
            unit=" mm", minimum=6, maximum=80, group="Structure"),
-    Option("base", "open", "Bottom of the rack: open, or a closed floor",
-           kind="choice", choices=("open", "plate"), group="Structure"),
-    Option("base_thickness", 3.0, "Floor thickness when base=plate", unit=" mm",
-           minimum=1.2, maximum=15, group="Structure"),
+    Option("base", "open", "Bottom of the rack", kind="choice",
+           choices=SURFACES, group="Structure"),
+    Option("base_thickness", 3.0, "Floor thickness, if there is a floor",
+           unit=" mm", minimum=1.2, maximum=15, group="Structure"),
     Option("floor_gap", 4.0, "Clearance beneath the lowest bin", unit=" mm",
            minimum=0.0, maximum=100, group="Structure"),
-    Option("top", "none", "Top of the rack: open, or a closed plate",
-           kind="choice", choices=("none", "plate"), group="Structure"),
-    Option("top_thickness", 3.0, "Top plate thickness when top=plate", unit=" mm",
-           minimum=1.2, maximum=15, group="Structure"),
+    Option("top", "open", "Top of the rack", kind="choice", choices=SURFACES,
+           group="Structure"),
+    Option("top_thickness", 3.0, "Top plate thickness, if there is a top",
+           unit=" mm", minimum=1.2, maximum=15, group="Structure"),
+
+    # ---- what the cut-outs look like -------------------------------------
+    Option("pattern", "windows",
+           "Shape cut into every surface set to 'cut'", kind="choice",
+           choices=patterns.PATTERNS, group="Pattern"),
+    Option("pattern_cell", None, "Size of one cut-out", unit=" mm",
+           minimum=4, maximum=90, group="Pattern",
+           default_note="whatever suits the chosen pattern"),
+    Option("pattern_rib", None,
+           "Material left between neighbouring cut-outs", unit=" mm",
+           minimum=1.2, maximum=40, group="Pattern",
+           default_note="whatever suits the chosen pattern"),
     Option("chamfer", 1.2, "Edge break on the outer front and back corners",
            unit=" mm", minimum=0.0, maximum=8, group="Structure"),
 
@@ -169,6 +186,7 @@ class Layout:
 
         # --- front to back ---------------------------------------------
         self.front_t = wall if opt["front_stop"] != "none" else 0.0
+        self.pattern_margin_z = max(PATTERN_MARGIN, opt["rail_thickness"] + 4.0)
         self.rear_t = opt["back_thickness"] if opt["back"] != "open" else 0.0
         self.cavity_len = spec.length + opt["depth_clearance"]
         self.depth = self.front_t + self.cavity_len + self.rear_t
@@ -176,8 +194,8 @@ class Layout:
         self.cavity_y1 = self.front_t + self.cavity_len
 
         # --- up the rack -------------------------------------------------
-        self.base_t = opt["base_thickness"] if opt["base"] == "plate" else 0.0
-        self.top_t = opt["top_thickness"] if opt["top"] == "plate" else 0.0
+        self.base_t = opt["base_thickness"] if opt["base"] != "open" else 0.0
+        self.top_t = opt["top_thickness"] if opt["top"] != "open" else 0.0
         self.pitch_z = spec.height + opt["headroom"]
         self.rail_top_0 = self.base_t + opt["floor_gap"] + spec.hang_depth
         self.rail_tops = [
@@ -255,7 +273,7 @@ class BinShelfGenerator(Generator):
     def slug(self, opt: dict[str, Any]) -> str:
         return (
             f"bin-shelf_{opt['bin']}_{opt['columns']}x{opt['rows']}"
-            f"_{opt['back']}-back_{opt['front_stop']}-front"
+            f"_{opt['pattern']}_{opt['front_stop']}-front"
         )
 
     def listing_title(self, opt: dict[str, Any], result: BuildResult) -> str:
@@ -344,19 +362,17 @@ def _validate(spec: BinSpec, opt: dict[str, Any], report: Report) -> None:
             "hang below its own rim."
         )
 
-    if opt["back"] == "open" and not (
-        opt["base"] == "plate" and opt["top"] == "plate"
-    ):
+    if opt["back"] == "open" and "open" in (opt["base"], opt["top"]):
         raise ValueError(
             "With --back open there is nothing joining the two side panels, so "
-            "the rack would print as two loose halves. Use --back windowed or "
-            "--back panel, or brace it top and bottom with --base plate "
-            "--top plate."
+            "the rack would print as two loose halves. Use --back cut or "
+            "--back solid, or brace it top and bottom with --base solid "
+            "--top solid."
         )
 
     if opt["wall_mount"]:
-        if opt["back"] != "panel":
-            opt["back"] = "panel"
+        if opt["back"] != "solid":
+            opt["back"] = "solid"
             report.note(
                 "wall_mount needs something to put the keyholes in, so the "
                 "back was switched to a full panel."
@@ -399,6 +415,15 @@ def _check_fit(spec: BinSpec, layout: Layout, opt: dict[str, Any],
             "Rail pads are long enough to meet in the middle; --rail-style "
             "full would use no more plastic."
         )
+
+    cell, rib = _pattern_size(opt)
+    for surface, count in _pattern_counts(spec, layout, opt).items():
+        if opt[surface] == "cut" and count == 0:
+            report.warn(
+                f"No {opt['pattern']} cut-out fits the {surface}, so that "
+                f"surface came out solid. Reduce --pattern-cell (currently "
+                f"{cell:.0f} mm) or --pattern-rib (currently {rib:.0f} mm)."
+            )
 
     bed = (opt["bed_x"], opt["bed_y"], opt["bed_z"])
     size = (layout.width, layout.depth, layout.height)
@@ -461,10 +486,14 @@ def _assemble(spec: BinSpec, layout: Layout, opt: dict[str, Any]) -> geom.Solid:
     body = geom.union(solids)
 
     cutters: list[geom.Solid] = []
-    if opt["back"] == "windowed":
-        cutters += _back_windows(spec, layout, opt)
-    if opt["sides"] == "windowed":
-        cutters += _side_windows(spec, layout, opt)
+    cutters += _back_cutters(spec, layout, opt)
+    cutters += _side_cutters(spec, layout, opt)
+    cutters += _plate_cutters(spec, layout, opt, "base", -1.0,
+                              layout.base_t + 1.0)
+    cutters += _plate_cutters(
+        spec, layout, opt, "top",
+        layout.body_height - layout.top_t - 1.0, layout.body_height + 1.0,
+    )
     if opt["stackable"]:
         cutters += _stack_sockets(layout, opt)
     if opt["wall_mount"]:
@@ -582,122 +611,127 @@ def _back_panel(layout: Layout, opt: dict[str, Any]) -> list[geom.Solid]:
     ]
 
 
-def _back_windows(spec: BinSpec, layout: Layout,
-                  opt: dict[str, Any]) -> list[geom.Solid]:
-    """Slots that take most of the weight out of the back panel.
+def _bay_bands(spec: BinSpec, layout: Layout,
+               opt: dict[str, Any]) -> list[tuple[float, float]]:
+    """The clear vertical band beside each bin, one per level.
 
-    Each slot is a rectangle with its corners taken off at 45 degrees. The top
-    corners are the reason: a plain rectangular window leaves its whole top
-    edge bridging across open air part-way up a wall, while 45-degree corners
-    reduce that to a short flat span any slicer bridges without support.
+    A band runs from a margin above the rail below it to a margin below its own
+    rail, so every rail keeps solid material behind its 45-degree underside and
+    the cut-outs get the whole span in between -- including the gap under the
+    bin, which is air anyway.
+
+    The lowest band stops above the floor instead, clear of the base plate and
+    of the stacking sockets cut into the panel bottoms.
     """
-    margin_x, margin_z, rib = 9.0, 8.0, 8.0
-    min_rect = 8.0
-    y0 = layout.depth - layout.rear_t - 1.0
-    y1 = layout.depth + 1.0
+    margin = layout.pattern_margin_z
+    floor = layout.base_t
+    if opt["stackable"]:
+        floor = max(floor, opt["stack_rib_height"] + 0.4)
 
-    out = []
-    for column in range(opt["columns"]):
-        x_left = layout.cell_x0(column) + margin_x
-        available = layout.cell_inner - 2 * margin_x
-        if available <= 12.0:
-            continue
-        for rail_top in layout.rail_tops:
-            z_bottom = rail_top - spec.hang_depth + margin_z
-            z_apex = rail_top - margin_z
-            height = z_apex - z_bottom
-            if height <= min_rect + 4.0:
-                continue
-            count, slot_w = _slot_layout(available, height, rib, min_rect)
-            if count == 0:
-                continue
-            for index in range(count):
-                x0 = x_left + index * (slot_w + rib)
-                out.append(
-                    geom.prism_y(
-                        _window_profile(x0, x0 + slot_w, z_bottom, z_apex),
-                        y0, y1,
-                    )
-                )
-    return out
+    bands = []
+    for index, rail_top in enumerate(layout.rail_tops):
+        low = layout.rail_tops[index - 1] + margin if index else floor + margin
+        high = rail_top - margin
+        if high - low > patterns.MIN_HOLE:
+            bands.append((low, high))
+    return bands
 
 
+def _pattern_size(opt: dict[str, Any]) -> tuple[float, float]:
+    """Cell and rib, falling back to whatever suits the chosen pattern."""
+    style = opt["pattern"]
+    cell, rib = opt["pattern_cell"], opt["pattern_rib"]
+    return (
+        patterns.default_cell(style) if cell is None else cell,
+        patterns.default_rib(style) if rib is None else rib,
+    )
 
-def _window_profile(a0: float, a1: float, b0: float, b1: float) -> list:
-    """A rectangle with 45-degree corners, in whichever plane the caller uses."""
-    width, height = a1 - a0, b1 - b0
-    top = max((width - MAX_WINDOW_BRIDGE) / 2.0, 0.0)
-    top = min(top, height * 0.45, width * 0.45)
-    bottom = min(top * 0.6, height * 0.25)
+
+def _cut(opt: dict[str, Any], rect) -> list[list[tuple[float, float]]]:
+    cell, rib = _pattern_size(opt)
+    return patterns.tile(opt["pattern"], rect, cell, rib, MAX_WINDOW_BRIDGE)
+
+
+def _bay_span(layout: Layout, column: int) -> tuple[float, float]:
+    left = layout.cell_x0(column) + PATTERN_MARGIN
+    return left, layout.cell_x0(column) + layout.cell_inner - PATTERN_MARGIN
+
+
+def _depth_span(layout: Layout) -> tuple[float, float]:
+    return PATTERN_MARGIN, layout.depth - layout.rear_t - PATTERN_MARGIN
+
+
+def _cut_regions(spec: BinSpec, layout: Layout,
+                 opt: dict[str, Any]) -> dict[str, list[tuple]]:
+    """The rectangles each patterned surface gets to fill.
+
+    One place decides where cut-outs may go, so the geometry and the check
+    that the pattern actually fits cannot disagree. Side regions are listed
+    once even though every panel gets them, since all panels are identical.
+    """
+    bands = _bay_bands(spec, layout, opt)
+    front, back = _depth_span(layout)
+    bays = [_bay_span(layout, column) for column in range(opt["columns"])]
+
+    regions: dict[str, list[tuple]] = {name: [] for name in _SURFACE_NAMES}
+    if opt["sides"] == "cut":
+        regions["sides"] = [(front, low, back, high) for low, high in bands]
+    if opt["back"] == "cut":
+        regions["back"] = [
+            (x0, low, x1, high) for x0, x1 in bays for low, high in bands
+        ]
+    for plate in ("base", "top"):
+        if opt[plate] == "cut":
+            regions[plate] = [(x0, front, x1, back) for x0, x1 in bays]
+    return regions
+
+
+def _pattern_counts(spec: BinSpec, layout: Layout,
+                    opt: dict[str, Any]) -> dict[str, int]:
+    """How many cut-outs each surface would actually get."""
+    return {
+        name: sum(len(_cut(opt, rect)) for rect in rects)
+        for name, rects in _cut_regions(spec, layout, opt).items()
+    }
+
+
+def _back_cutters(spec: BinSpec, layout: Layout,
+                  opt: dict[str, Any]) -> list[geom.Solid]:
+    """Pattern the back panel, in the (x, z) plane of that wall."""
+    y0, y1 = layout.depth - layout.rear_t - 1.0, layout.depth + 1.0
     return [
-        (a0 + bottom, b0),
-        (a1 - bottom, b0),
-        (a1, b0 + bottom),
-        (a1, b1 - top),
-        (a1 - top, b1),
-        (a0 + top, b1),
-        (a0, b1 - top),
-        (a0, b0 + bottom),
+        geom.prism_y(profile, y0, y1)
+        for rect in _cut_regions(spec, layout, opt)["back"]
+        for profile in _cut(opt, rect)
     ]
 
 
-def _side_windows(spec: BinSpec, layout: Layout,
+def _side_cutters(spec: BinSpec, layout: Layout,
                   opt: dict[str, Any]) -> list[geom.Solid]:
-    """The same gabled slots down the side panels.
+    """Pattern the side panels, in the (y, z) plane of those walls.
 
     Solid sides are most of the plastic in a rack this shape, and most of that
-    plastic is doing nothing: the load runs straight down the panel edges. The
-    slots sit in the band beside each bin's body, clear of the rails above them,
-    and leave upright ribs between the levels to carry the weight.
+    plastic is doing nothing: the load runs straight down the panel edges.
     """
-    margin_y = 8.0
-    # Stay clear of the rail's 45-degree underside, which reaches one rail
-    # thickness below its bearing surface.
-    margin_z = max(8.0, opt["rail_thickness"] + 4.0)
-    rib, min_rect = 9.0, 10.0
-    available = layout.depth - 2 * margin_y - layout.rear_t
-    if available <= 14.0:
-        return []
-
+    regions = _cut_regions(spec, layout, opt)["sides"]
     out = []
     for index in range(opt["columns"] + 1):
         x0 = layout.panel_x0(index) - 1.0
         x1 = x0 + opt["wall"] + 2.0
-        for rail_top in layout.rail_tops:
-            z_bottom = rail_top - spec.hang_depth + margin_z
-            z_apex = rail_top - margin_z
-            height = z_apex - z_bottom
-            if height <= min_rect + 4.0:
-                continue
-            count, slot_w = _slot_layout(available, height, rib, min_rect)
-            if count == 0:
-                continue
-            for slot in range(count):
-                y0 = margin_y + slot * (slot_w + rib)
-                out.append(
-                    geom.prism_x(
-                        _window_profile(y0, y0 + slot_w, z_bottom, z_apex),
-                        x0, x1,
-                    )
-                )
+        for rect in regions:
+            for profile in _cut(opt, rect):
+                out.append(geom.prism_x(profile, x0, x1))
     return out
 
 
-def _slot_layout(available: float, height: float, rib: float,
-                 min_rect: float) -> tuple[int, float]:
-    """Fit as many ~30 mm slots across `available` as leave a usable opening."""
-    target = 30.0
-    count = max(1, round(available / (target + rib))) or 1
-    for _ in range(8):
-        slot_w = (available - (count - 1) * rib) / count
-        if slot_w <= 0:
-            return 0, 0.0
-        if slot_w >= min_rect and height >= min_rect:
-            return count, slot_w
-        count -= 1
-        if count < 1:
-            return 0, 0.0
-    return 0, 0.0
+def _plate_cutters(spec: BinSpec, layout: Layout, opt: dict[str, Any],
+                   surface: str, z0: float, z1: float) -> list[geom.Solid]:
+    """Pattern a horizontal plate, in the (x, y) plane, one bay at a time."""
+    return [
+        geom.prism_z(profile, z0, z1)
+        for rect in _cut_regions(spec, layout, opt)[surface]
+        for profile in _cut(opt, rect)
+    ]
 
 
 def _front_stops(spec: BinSpec, layout: Layout,
@@ -750,13 +784,13 @@ def _label_recesses(layout: Layout, opt: dict[str, Any]) -> list[geom.Solid]:
 
 
 def _base_plate(layout: Layout, opt: dict[str, Any]) -> list[geom.Solid]:
-    if opt["base"] != "plate":
+    if opt["base"] == "open":
         return []
     return [geom.box([layout.width, layout.depth, layout.base_t])]
 
 
 def _top_plate(layout: Layout, opt: dict[str, Any]) -> list[geom.Solid]:
-    if opt["top"] != "plate":
+    if opt["top"] == "open":
         return []
     return [
         geom.box(
@@ -935,6 +969,12 @@ def _facts(spec: BinSpec, layout: Layout, opt: dict[str, Any]) -> dict[str, Any]
         "level_pitch_mm": round(layout.pitch_z, 2),
         "rail_tops_mm": [round(z, 2) for z in layout.rail_tops],
         "bin_drop_below_rail_mm": round(spec.hang_depth, 2),
+        "pattern": opt["pattern"],
+        "pattern_cell_mm": round(_pattern_size(opt)[0], 2),
+        "pattern_rib_mm": round(_pattern_size(opt)[1], 2),
+        "patterned_surfaces": [
+            name for name in _SURFACE_NAMES if opt[name] == "cut"
+        ],
         "supports_required": False,
     }
 
@@ -952,8 +992,11 @@ def _highlights(spec: BinSpec, layout: Layout, opt: dict[str, Any],
         f"{layout.bearing:.1f} mm of rim on each side",
         "Prints upright in one piece, no supports",
     ]
-    if opt["sides"] == "windowed":
-        items.append("Cut-away sides: lighter, faster to print, contents visible")
+    if "cut" in (opt["sides"], opt["back"], opt["base"], opt["top"]):
+        cell, rib = _pattern_size(opt)
+        items.append(patterns.describe(opt["pattern"], cell, rib,
+                                       MAX_WINDOW_BRIDGE)
+                     + " through " + _cut_surface_list(opt))
     if opt["stackable"]:
         items.append("Ribs and sockets let racks stack and stay put")
     if opt["wall_mount"]:
@@ -962,11 +1005,16 @@ def _highlights(spec: BinSpec, layout: Layout, opt: dict[str, Any],
         items.append("Recessed label panel across the front of every level")
     elif opt["front_stop"] != "none":
         items.append("Front stops keep bins from walking out")
-    if opt["back"] == "panel":
-        items.append("Solid back panel doubling as the bin backstop")
-    elif opt["back"] == "windowed":
-        items.append("Cut-away back panel: rigid, light, and a bin backstop")
+    if opt["back"] != "open":
+        items.append("Back panel doubling as the bin backstop")
     return items
+
+
+def _cut_surface_list(opt: dict[str, Any]) -> str:
+    named = [name for name in _SURFACE_NAMES if opt[name] == "cut"]
+    if len(named) == 1:
+        return "the " + named[0]
+    return "the " + ", ".join(named[:-1]) + " and " + named[-1]
 
 
 def _print_notes(layout: Layout, opt: dict[str, Any]) -> list[str]:
@@ -984,9 +1032,12 @@ def _print_notes(layout: Layout, opt: dict[str, Any]) -> list[str]:
             "each bay at every level. Any slicer handles it, but choose "
             "--front-stop tabs if your bridging is unhappy."
         )
-    if opt["top"] == "plate":
+    if opt["top"] != "open":
         notes.append(
             f"The top plate bridges {layout.cell_inner:.0f} mm across each bay."
+            + (" Cutting a pattern into it leaves less for the bridge to land "
+               "on, so use --top solid if your bridging is marginal."
+               if opt["top"] == "cut" else "")
         )
     if opt["stackable"]:
         notes.append(

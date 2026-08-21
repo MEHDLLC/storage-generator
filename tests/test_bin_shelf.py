@@ -2,7 +2,7 @@ import unittest
 
 from _support import build
 
-from storagegen import geom
+from storagegen import geom, patterns
 from storagegen.generators import bin_shelf
 from storagegen.options import Report
 
@@ -29,11 +29,12 @@ class Integrity(unittest.TestCase):
         side assemblies unconnected, and nothing about the STL says so.
         """
         axes = {
-            "back": ("windowed", "panel"),
-            "sides": ("windowed", "solid"),
+            "back": ("cut", "solid"),
+            "sides": ("cut", "solid"),
+            "pattern": patterns.PATTERNS,
             "front_stop": ("none", "tabs", "lip", "label"),
-            "base": ("open", "plate"),
-            "top": ("none", "plate"),
+            "base": ("open", "solid", "cut"),
+            "top": ("open", "solid", "cut"),
             "rail_style": ("full", "pads"),
             "stackable": (True, False),
         }
@@ -43,7 +44,7 @@ class Integrity(unittest.TestCase):
             for value in values[1:]:
                 cases.append({**baseline, name: value})
         cases.append({name: values[-1] for name, values in axes.items()})
-        cases.append({"back": "open", "base": "plate", "top": "plate"})
+        cases.append({"back": "open", "base": "solid", "top": "solid"})
 
         for case in cases:
             with self.subTest(**case):
@@ -58,6 +59,74 @@ class Integrity(unittest.TestCase):
                 _, _, result = build("bin-shelf", columns=columns, rows=rows)
                 self.assertEqual(
                     len(result.parts.parts[0].solid.decompose()), 1
+                )
+
+
+class Patterns(unittest.TestCase):
+    def test_every_pattern_cuts_something_and_stays_one_piece(self):
+        for style in patterns.PATTERNS:
+            with self.subTest(pattern=style):
+                _, _, cut = build("bin-shelf", rows=2, pattern=style)
+                _, _, solid = build("bin-shelf", rows=2, sides="solid",
+                                    back="solid")
+                part = cut.parts.parts[0]
+                self.assertEqual(len(part.solid.decompose()), 1)
+                self.assertTrue(part.is_manifold())
+                self.assertLess(
+                    part.volume_mm3, solid.parts.parts[0].volume_mm3,
+                    f"{style} removed no material",
+                )
+                self.assertEqual(cut.report.warnings, [])
+
+    def test_a_pattern_can_be_cut_into_all_four_surfaces(self):
+        _, _, result = build("bin-shelf", rows=2, pattern="honeycomb",
+                             base="cut", top="cut")
+        self.assertEqual(
+            result.facts["patterned_surfaces"], ["sides", "back", "base", "top"]
+        )
+        self.assertEqual(len(result.parts.parts[0].solid.decompose()), 1)
+
+    def test_solid_surfaces_are_not_patterned(self):
+        _, _, result = build("bin-shelf", rows=2, sides="solid", back="solid")
+        self.assertEqual(result.facts["patterned_surfaces"], [])
+
+    def test_cell_and_rib_change_how_much_is_removed(self):
+        _, _, small = build("bin-shelf", rows=2, pattern="grid",
+                            pattern_cell=10, pattern_rib=5)
+        _, _, large = build("bin-shelf", rows=2, pattern="grid",
+                            pattern_cell=20, pattern_rib=5)
+        self.assertLess(
+            large.parts.parts[0].volume_mm3, small.parts.parts[0].volume_mm3
+        )
+
+    def test_each_pattern_brings_its_own_default_size(self):
+        _, _, result = build("bin-shelf", pattern="honeycomb")
+        self.assertAlmostEqual(
+            result.facts["pattern_cell_mm"], patterns.default_cell("honeycomb")
+        )
+
+    def test_a_pattern_too_big_to_fit_warns_instead_of_going_solid(self):
+        _, _, result = build("bin-shelf", pattern="round", pattern_cell=70)
+        self.assertTrue(
+            any("came out solid" in w for w in result.report.warnings)
+        )
+
+    def test_cut_outs_never_eat_into_a_rail(self):
+        """A rail with a hole under it has nothing to cantilever from."""
+        spec, opt, layout = layout_for(rows=3, pattern="grid")
+        _, _, result = build("bin-shelf", rows=3, pattern="grid")
+        rack = result.parts.parts[0].solid
+        for rail_top in layout.rail_tops:
+            with self.subTest(rail_top=round(rail_top, 1)):
+                probe = geom.box(
+                    [2.0, layout.depth - 20.0, opt["rail_thickness"]],
+                    at=[layout.cell_x0(0) + 1.0, 10.0,
+                        rail_top - opt["rail_thickness"]],
+                )
+                solid = geom.intersection([rack, probe]).volume()
+                self.assertAlmostEqual(
+                    solid, probe.volume(), delta=probe.volume() * 0.02,
+                    msg="a cut-out has broken into the rail",
                 )
 
 
@@ -164,11 +233,11 @@ class Guardrails(unittest.TestCase):
         )
 
     def test_wall_mount_forces_a_panel_to_hang_from(self):
-        _, opt, result = build("bin-shelf", wall_mount=True, back="windowed",
+        _, opt, result = build("bin-shelf", wall_mount=True, back="cut",
                                stackable=False)
-        self.assertEqual(opt["back"], "windowed", "the request is unchanged")
+        self.assertEqual(opt["back"], "cut", "the request is unchanged")
         self.assertEqual(
-            result.effective_options["back"], "panel",
+            result.effective_options["back"], "solid",
             "but the rack was built with a panel to hang from",
         )
         self.assertTrue(any("full panel" in n for n in result.report.notes))
@@ -178,7 +247,7 @@ class WallMount(unittest.TestCase):
     def build_it(self, **extra):
         options = {"wall_mount": True, "stackable": False, "rows": 1, **extra}
         _, opt, result = build("bin-shelf", **options)
-        _, _, layout = layout_for(**{**options, "back": "panel"})
+        _, _, layout = layout_for(**{**options, "back": "solid"})
         return result.effective_options, layout, result.parts.parts[0].solid
 
     def test_the_flange_stands_above_the_rack(self):

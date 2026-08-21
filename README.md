@@ -20,7 +20,7 @@ PYTHONPATH=src python3 -m storagegen.cli options bin-shelf    # every option
 
 PYTHONPATH=src python3 -m storagegen.cli bin-shelf --out out
 PYTHONPATH=src python3 -m storagegen.cli bin-shelf --columns 2 --rows 4 \
-    --front-stop label --base plate --out out
+    --pattern honeycomb --front-stop label --base solid --out out
 ```
 
 Installing the package (`pip install -e .`) puts a `storagegen` command on your
@@ -56,9 +56,31 @@ span lets the bin settle a millimetre until the taper wedges, a slightly narrow
 one lets it ride on the rim, and either way it is carried down both sides.
 
 It prints standing up in one piece with no support material. Rail undersides
-are cut back at 45 degrees, the rail mouths flare open at the front so bins
-guide themselves in, and window corners are chamfered so nothing bridges more
-than about 12 mm.
+are cut back at 45 degrees and the rail mouths flare open at the front so bins
+guide themselves in.
+
+## Patterns
+
+Each of the four surfaces -- `sides`, `back`, `base`, `top` -- can be `open`,
+`solid`, or `cut`. What gets cut into the ones set to `cut` is one option:
+
+```bash
+PYTHONPATH=src python3 -m storagegen.cli bin-shelf --pattern honeycomb --out out
+PYTHONPATH=src python3 -m storagegen.cli bin-shelf --pattern diamond \
+    --pattern-cell 12 --pattern-rib 4 --base cut --top cut --out out
+```
+
+![The six patterns](docs/images/patterns.png)
+
+`windows` (the default), `grid`, `honeycomb`, `diamond`, `round`, `triangle`.
+Each brings its own sensible cell and web size, so switching pattern needs no
+other change; `--pattern-cell` and `--pattern-rib` override them.
+
+Every pattern is shaped so a vertical panel still prints without support:
+hexagons sit flat-top rather than point-top, diamonds and triangles keep their
+upper edges at 45 degrees or steeper, and square holes get their top corners
+taken off so nothing bridges more than 12 mm. That rule is enforced by a test
+that walks the outline of every cut-out rather than being left as a promise.
 
 See [docs/bin-shelf.md](docs/bin-shelf.md) for the design in detail and
 [docs/adding-a-generator.md](docs/adding-a-generator.md) for how to add the
@@ -112,7 +134,8 @@ dimension records whether it came from a specification or an estimate.
 ## Development
 
 ```bash
-make test     # 78 tests, no network, a few seconds
+make test     # 101 tests, no network, a few seconds
+make patterns # rebuild the pattern comparison image
 make demo     # build one of each into out/
 ```
 
@@ -127,6 +150,7 @@ the print bed:
   floating in a hole
 - a rack **stacked on itself** seats without its ribs fouling their sockets
 - each step of the fit gauge really is the width it claims
+- every cut-out is printable without support, checked edge by edge
 - the description never quotes a dimension the model does not have
 
 ## Roadmap

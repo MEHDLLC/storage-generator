@@ -55,7 +55,7 @@ overhang is dealt with in geometry rather than left to the slicer:
 |---|---|
 | Rails cantilevering into the opening | underside cut back at 45 degrees |
 | Rail mouths | flared outward at the front, so a bin steers itself in |
-| Windows in the back and sides | corners chamfered at 45 degrees, leaving at most a 12 mm flat top |
+| Cut-outs in the back and sides | shaped so no roof is shallower than 45 degrees (see Patterns) |
 | Stacking ribs | chamfered on top, and sunk 0.6 mm into the panel so they fuse |
 | Side panels and back | plain vertical walls |
 
@@ -71,18 +71,55 @@ that change what the thing *is*:
 | Option | Choices | Notes |
 |---|---|---|
 | `columns`, `rows` | 1-6, 1-12 | Bays across and levels up |
-| `back` | `windowed`, `panel`, `open` | The back is the member that ties the two sides together. `open` is only allowed if `base` and `top` are both plates. |
-| `sides` | `windowed`, `solid` | Windowed sides cut roughly a quarter of the plastic |
+| `back` | `cut`, `solid`, `open` | The back is the member that ties the two sides together. `open` is only allowed if `base` and `top` are both there. |
+| `sides` | `cut`, `solid` | Cut sides save roughly a quarter of the plastic |
+| `base` | `open`, `solid`, `cut` | A floor stiffens the rack and catches spills |
+| `top` | `open`, `solid`, `cut` | A top bridges one bay |
+| `pattern` | six styles | What gets cut into every surface set to `cut` |
 | `front_stop` | `tabs`, `none`, `lip`, `label` | `tabs` is support-free; `lip` and `label` bridge one bay |
-| `base` | `open`, `plate` | A plate stiffens the rack and catches spills |
-| `top` | `none`, `plate` | A plate bridges one bay |
 | `rail_style` | `full`, `pads` | Pads save plastic on long bays |
 | `stackable` | yes/no | Ribs on top, sockets underneath |
 | `wall_mount` | yes/no | Adds a keyhole flange above a solid back |
 
-`wall_mount` implies `back = panel`, because the keyholes need something to go
+`wall_mount` implies `back = solid`, because the keyholes need something to go
 in. The build reports what it actually used in `effective_options`, and the
 manifest and listing describe the model rather than the request.
+
+## Patterns
+
+Four surfaces can be cut, and one option decides what they are cut with.
+
+| Pattern | Shape | Default cell / web |
+|---|---|---|
+| `windows` | Large openings, corners taken off | 28 / 8 mm |
+| `grid` | Square holes, top corners taken off | 15 / 5 mm |
+| `honeycomb` | Flat-top hexagons | 14 / 5 mm |
+| `diamond` | Squares stood on a corner | 16 / 6 mm |
+| `round` | Circles | 14 / 5 mm |
+| `triangle` | Equilateral triangles, apex up | 20 / 5 mm |
+
+Every one of them keeps a vertical panel printable without support. The rule
+is that no edge with material above it may be shallower than 45 degrees:
+
+- hexagons sit **flat-top**. A point-top hexagon's upper edges lie at 30
+  degrees from horizontal, which no printer will hold; a flat-top hexagon's
+  are at 60 degrees, and its one horizontal span is capped at 12 mm -- the
+  hexagon shrinks rather than exceed it.
+- diamonds are squares on a corner, so their upper edges sit at exactly 45
+  degrees. Triangles point up, never down.
+- squares and windows get their top corners taken off at 45 degrees, leaving
+  a flat span no longer than 12 mm.
+- circles close over gradually, which is why the default cell is modest.
+
+Cut-outs are placed only in the clear band beside each bin: from a margin
+above the rail below to a margin below their own rail, so every rail keeps
+solid material behind its 45-degree underside. Only whole cells are placed and
+the result is centred, so a pattern never trails off into slivers at an edge.
+If nothing fits, the surface comes out solid and the run says so rather than
+leaving you to notice in the slicer.
+
+Open area runs about 55% for the textured patterns and about 75% for
+`windows`, which is why `windows` is both the default and the lightest.
 
 ## Things the generator refuses to build
 
