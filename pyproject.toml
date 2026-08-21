@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "storage-generator"
+version = "0.1.0"
+description = "Parametric generators for printable storage hardware"
+requires-python = ">=3.10"
+dependencies = ["manifold3d>=2.5", "numpy>=1.24"]
+
+[project.scripts]
+storagegen = "storagegen.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
