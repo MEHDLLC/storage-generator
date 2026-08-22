@@ -14,6 +14,7 @@ Coordinate convention used by every generator in this package:
 
 from __future__ import annotations
 
+import math
 from typing import Iterable, Sequence
 
 import manifold3d as m3
@@ -81,6 +82,39 @@ def cylinder_y(radius: float, y0: float, y1: float, at_xz: Point2 = (0.0, 0.0),
     solid = Solid.cylinder(length, radius, radius, circular_segments=segments)
     # Rotating -90 about X sends the extrusion axis from +Z to +Y.
     return solid.rotate([-90, 0, 0]).translate([at_xz[0], y0, at_xz[1]])
+
+
+def ngon_profile(across_flats: float, sides: int = 8,
+                 centre: Point2 = (0.0, 0.0)) -> list[Point2]:
+    """A regular polygon with a flat face down, as an (a, b) point list.
+
+    Used for pivot pins. A pin printed lying on the bed has its axis in the
+    bed plane, so a round one is a horizontal cylinder -- a textbook
+    support-needed feature. A polygon with a flat face down replaces that with
+    a flat first layer, a short bridge on top, and side faces no shallower than
+    45 degrees at eight sides. It rotates in a round socket on its corners.
+    """
+    if sides < 3:
+        raise ValueError(f"a pin needs at least 3 sides, got {sides}")
+    radius = (across_flats / 2.0) / math.cos(math.pi / sides)
+    start = math.pi / sides - math.pi / 2.0     # puts a flat face at the bottom
+    return [
+        (
+            centre[0] + radius * math.cos(start + 2 * math.pi * i / sides),
+            centre[1] + radius * math.sin(start + 2 * math.pi * i / sides),
+        )
+        for i in range(sides)
+    ]
+
+
+def circle_profile(radius: float, centre: Point2 = (0.0, 0.0),
+                   segments: int = 48) -> list[Point2]:
+    """A closed circle as an (a, b) point list."""
+    return [
+        (centre[0] + radius * math.cos(2 * math.pi * i / segments),
+         centre[1] + radius * math.sin(2 * math.pi * i / segments))
+        for i in range(segments)
+    ]
 
 
 def union(*solids: Solid | Iterable[Solid]) -> Solid:

@@ -4,8 +4,9 @@ Parametric generators for printable storage hardware. Each generator takes a
 set of options, builds real solid geometry, and writes a run folder containing
 STLs, a 3MF, a rendered preview, and the title and description that go with it.
 
-First generator in the family: a **hanging bin rack** that carries tote bins by
-their rims, built around the **GreenMade Mini Bin**.
+Two generators so far: a **hanging bin rack** that carries tote bins by their
+rims, built around the **GreenMade Mini Bin**, and a **folding bin** whose four
+walls pivot down flat onto its own floor.
 
 ![The rack with bins in it](docs/images/bin-shelf-in-use.png)
 
@@ -59,6 +60,42 @@ It prints standing up in one piece with no support material. Rail undersides
 are cut back at 45 degrees and the rail mouths flare open at the front so bins
 guide themselves in.
 
+## The folding bin
+
+Four walls, each on a pair of snap-in pivots, folding down flat onto the floor
+they stand on. Five parts, all printed flat, no supports and no fasteners.
+
+![The fold, left to right](docs/images/folding-bin-fold.png)
+
+```bash
+PYTHONPATH=src python3 -m storagegen.cli folding-bin --out out
+PYTHONPATH=src python3 -m storagegen.cli folding-bin --preset greenmade-rack --out out
+```
+
+The two pairs pivot one wall thickness apart in height, so folded they stack
+instead of colliding: the short end walls go down first, underneath, and the
+long side walls fold over the top of them. Erecting is that order reversed,
+which is why it is the end walls that wrap the corners -- they arrive last,
+when there is something to wrap around.
+
+A wall prints lying flat, so its hinge axis lies *in* the bed plane and a round
+pin would be a horizontal cylinder: an overhang. The pins are eight-sided
+instead. Flat first layer, short bridge on top, no face shallower than 45
+degrees, and about 0.19 mm of wobble turning in a round socket. The socket
+stays round, because a socket is a valley.
+
+Nothing in the base is dimensioned by hand to leave room for a wall. The base
+is built solid -- floor, rim, four corner posts -- and then each wall's own
+cross-section is stamped through it at every angle it turns through and
+subtracted. What survives is by definition the material that is never in the
+way, and it is also what stops the walls: the sweep runs from flat to square
+and no further, so everything a wall would have to pass through to lean out any
+further is still standing.
+
+`--preset greenmade-rack` sizes one to hang from the same rails as the moulded
+bin, so it drops into any rack this repo builds. See
+[docs/folding-bin.md](docs/folding-bin.md).
+
 ## Patterns
 
 Each of the four surfaces -- `sides`, `back`, `base`, `top` -- can be `open`,
@@ -82,7 +119,10 @@ upper edges at 45 degrees or steeper, and square holes get their top corners
 taken off so nothing bridges more than 12 mm. That rule is enforced by a test
 that walks the outline of every cut-out rather than being left as a promise.
 
-See [docs/bin-shelf.md](docs/bin-shelf.md) for the design in detail and
+Both generators use the same six patterns and the same rule.
+
+See [docs/bin-shelf.md](docs/bin-shelf.md) and
+[docs/folding-bin.md](docs/folding-bin.md) for the designs in detail, and
 [docs/adding-a-generator.md](docs/adding-a-generator.md) for how to add the
 next one.
 

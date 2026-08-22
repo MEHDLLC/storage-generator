@@ -1,6 +1,6 @@
 PYTHON ?= python3
 
-.PHONY: test demo patterns batch verify clean
+.PHONY: test demo patterns fold batch verify clean
 
 test:
 	$(PYTHON) -m unittest discover -s tests -v
@@ -8,9 +8,13 @@ test:
 demo:
 	PYTHONPATH=src $(PYTHON) -m storagegen.cli bin-shelf --out out
 	PYTHONPATH=src $(PYTHON) -m storagegen.cli fit-gauge --out out
+	PYTHONPATH=src $(PYTHON) -m storagegen.cli folding-bin --out out
 
 patterns:
 	$(PYTHON) tools/pattern_sheet.py
+
+fold:
+	$(PYTHON) tools/fold_sheet.py
 
 batch:
 	PYTHONPATH=src $(PYTHON) -m storagegen.cli batch --out out --keep-going

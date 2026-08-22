@@ -8,7 +8,9 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from storagegen import generator as registry  # noqa: E402
-from storagegen.generators import bin_shelf, fit_gauge  # noqa: E402,F401
+from storagegen.generators import (  # noqa: E402,F401
+    bin_shelf, fit_gauge, folding_bin,
+)
 
 
 def build(key: str, **options):

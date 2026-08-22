@@ -3,9 +3,9 @@
   "_comment": "Every product worth building. `items` are one-offs; `sweeps` expand their axes into every combination. Validated against each generator's own options, so a typo here fails in seconds rather than in a hundred build jobs.",
   "release": {
     "name": "storage-shelving",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "title": "Storage Shelving",
-    "summary": "Hanging bin racks for the GreenMade Mini Bin, plus the fit gauge that measures your bin so the rails match it. Every rack carries its bins on a pair of rails that catch them under the rim, and prints upright in one piece with no support material."
+    "summary": "Hanging bin racks for the GreenMade Mini Bin, folding bins that collapse flat onto their own floors, and the fit gauge that measures your bin so the rails match it. Every rack carries its bins on a pair of rails that catch them under the rim; every folding bin snaps together from five flat-printed parts with no fasteners. Nothing in the release needs support material."
   },
   "items": [
     {
@@ -39,6 +39,21 @@
         "headroom": 22
       },
       "_comment": "headroom is raised to clear the 18 mm label plate, so a bin lifts straight out instead of having to be tilted"
+    },
+    {
+      "name": "folding-bin_220x150x70_honeycomb",
+      "generator": "folding-bin",
+      "options": {
+        "pattern": "honeycomb"
+      }
+    },
+    {
+      "name": "folding-bin_greenmade-rack",
+      "generator": "folding-bin",
+      "options": {
+        "preset": "greenmade-rack"
+      },
+      "_comment": "sized to hang from the same rails as the moulded bin, so it drops into any rack in this release"
     }
   ],
   "sweeps": [
@@ -66,6 +81,31 @@
           "triangle"
         ]
       }
+    },
+    {
+      "generator": "folding-bin",
+      "name": "folding-bin_{width}x{depth}x{height}_{pattern}",
+      "options": {},
+      "axes": {
+        "width": [
+          170,
+          230
+        ],
+        "depth": [
+          140,
+          200
+        ],
+        "height": [
+          50,
+          80
+        ],
+        "pattern": [
+          "none",
+          "honeycomb",
+          "diamond"
+        ]
+      },
+      "_comment": "wall height is bounded by the bin's own footprint -- folded, each pair meets in the middle -- and the base is the widest part, so these combinations stay inside both that limit and a 256 mm bed"
     }
   ]
 }

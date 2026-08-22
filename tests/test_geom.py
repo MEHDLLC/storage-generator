@@ -69,6 +69,49 @@ class Chamfers(unittest.TestCase):
         self.assertAlmostEqual(cut.volume(), (24 - 4.5) * 10, places=3)
 
 
+class Profiles(unittest.TestCase):
+    """The pin profile is a printability rule expressed as geometry.
+
+    A pin lies in the bed plane when its wall is printed flat, so what decides
+    whether it needs support is the inclination of its shallowest face. Faces
+    on a regular n-gon are 360/n degrees apart, and with one of them flat on
+    the bed, that is exactly where the next one sits.
+    """
+
+    def test_an_ngon_has_a_flat_face_on_the_bed(self):
+        for sides in (6, 8, 10, 16):
+            with self.subTest(sides=sides):
+                points = geom.ngon_profile(5.0, sides)
+                low = sorted(p[1] for p in points)[:2]
+                self.assertAlmostEqual(low[0], low[1], places=9,
+                                       msg="two vertices should share the floor")
+                self.assertAlmostEqual(min(p[1] for p in points), -2.5, places=9)
+
+    def test_across_flats_is_what_it_says(self):
+        points = geom.ngon_profile(6.4, 8)
+        span = max(p[1] for p in points) - min(p[1] for p in points)
+        self.assertAlmostEqual(span, 6.4, places=9)
+
+    def test_eight_sides_is_the_shallowest_that_prints(self):
+        for sides, shallowest in ((6, 60.0), (8, 45.0), (10, 36.0)):
+            with self.subTest(sides=sides):
+                self.assertAlmostEqual(360.0 / sides, shallowest, places=6)
+
+    def test_a_polygon_needs_three_sides(self):
+        with self.assertRaises(ValueError):
+            geom.ngon_profile(5.0, 2)
+
+    def test_profiles_extrude_to_the_area_they_describe(self):
+        import math
+
+        pin = geom.prism_x(geom.ngon_profile(6.4, 8), 0.0, 10.0)
+        area = 8 * (3.2 ** 2) * math.tan(math.pi / 8)
+        self.assertAlmostEqual(pin.volume(), area * 10.0, places=3)
+
+        hole = geom.prism_z(geom.circle_profile(4.0, segments=256), 0.0, 3.0)
+        self.assertAlmostEqual(hole.volume(), math.pi * 16.0 * 3.0, places=1)
+
+
 class Booleans(unittest.TestCase):
     def test_union_ignores_empties_and_nesting(self):
         result = geom.union([geom.box([2, 2, 2]), None], geom.empty())
