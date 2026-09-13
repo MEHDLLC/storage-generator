@@ -174,7 +174,9 @@ def select(variants: Sequence[Variant], generator: str | None = None,
     chosen = list(variants)
 
     if generator:
-        chosen = [v for v in chosen if v.generator == generator]
+        # One key, or several separated by commas: "bin-shelf,fit-gauge".
+        wanted_generators = {g.strip() for g in generator.split(",") if g.strip()}
+        chosen = [v for v in chosen if v.generator in wanted_generators]
         if not chosen:
             raise CatalogueError(f"no variants use generator {generator!r}")
 

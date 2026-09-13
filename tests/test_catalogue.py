@@ -155,6 +155,16 @@ class TheShippedCatalogue(unittest.TestCase):
         for variant in loaded.variants:
             catalogue.validate(variant, str(path))
 
+    def test_a_product_line_can_be_picked_by_several_generators(self):
+        """The workflow's "Shelving only" means the rack and its gauge."""
+        path = Path(__file__).resolve().parents[1] / "catalogue.json"
+        loaded = catalogue.load(path)
+        picked = catalogue.select(loaded.variants, generator="bin-shelf, fit-gauge")
+        self.assertEqual({v.generator for v in picked}, {"bin-shelf", "fit-gauge"})
+        alone = catalogue.select(loaded.variants, generator="advent-calendar")
+        self.assertTrue(alone)
+        self.assertTrue(all(v.generator == "advent-calendar" for v in alone))
+
     def test_it_names_the_release_it_produces(self):
         path = Path(__file__).resolve().parents[1] / "catalogue.json"
         release = catalogue.load(path).release

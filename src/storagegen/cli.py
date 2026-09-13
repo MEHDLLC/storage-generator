@@ -136,8 +136,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _add_selection(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group("Selection")
     group.add_argument("--catalogue", default=DEFAULT_CATALOGUE, metavar="FILE")
-    group.add_argument("--generator", metavar="KEY",
-                       help="only variants built by this generator")
+    group.add_argument("--generator", metavar="KEY[,KEY]",
+                       help="only variants built by these generators, "
+                            "comma-separated")
     group.add_argument("--only", metavar="NAMES",
                        help="comma separated variant names")
     group.add_argument("--limit", type=int, metavar="N",

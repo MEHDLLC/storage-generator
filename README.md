@@ -222,10 +222,22 @@ units, and agreement with `manifest.json`. It does not repair anything. A
 model that fails is a bug upstream, and filling a hole automatically would
 ship a shape nobody chose.
 
-Two workflows: `ci.yml` (tests, then a smoke build and verify on every push)
-and `catalogue.yml` (plan into a matrix, build the chunks in parallel, collect
-and publish). Run the second from the Actions tab with a limit for "build me N
-items", and `publish: yes` to cut a GitHub release.
+Three workflows, all under the repository's Actions tab:
+
+- **Make an advent calendar** asks ten plain questions -- how many days, what
+  shape, what size, which motif, raised or recessed numbers, Lego studs, the
+  outside finish, the layout, where the numbers go, and whether to publish --
+  and builds exactly that calendar. The zip stays with the run for 90 days, or
+  becomes a release named after the calendar.
+- **Build everything in the catalogue** builds what `catalogue.json` lists.
+  "What to build" narrows it to one product line (shelving, folding bins or
+  advent calendars); "how many" builds a sample first. Publishing is only
+  allowed for a run that built everything, since the release tag claims the
+  whole catalogue.
+- **CI** runs the tests and a smoke build on every push.
+
+A workflow only knows the products that exist on the branch you run it from,
+so run it from a branch that has the generator you want, or merge first.
 
 The release tag names the product line rather than the repo, and comes out of
 `catalogue.json` so it cannot drift from what was built —

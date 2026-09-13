@@ -1,49 +1,65 @@
-name: Build catalogue
+name: Build everything in the catalogue
 
-# Builds the products listed in catalogue.json, in parallel, and publishes the
-# ones that pass validation.
+# Builds the products listed in catalogue.json, in parallel, and can publish
+# the result as a GitHub release.
 #
 # The variables are not restated here. `storagegen plan` reads catalogue.json
 # and checks every variant against each generator's own option declaration, so
 # a typo fails in the plan job in seconds rather than in every build job.
+#
+# To make one advent calendar to your own recipe, use the "Make an advent
+# calendar" workflow instead: it asks for the size, the shape and the lid
+# style in plain words and builds just that.
 
 on:
   workflow_dispatch:
     inputs:
-      limit:
-        description: "How many items to build (blank builds everything)"
-        required: false
-        default: ""
-      pick:
-        description: "Which ones, when limited"
-        required: false
-        default: spread
+      what:
+        description: "What to build"
+        required: true
+        default: "Everything in the catalogue"
         type: choice
-        options: [spread, first]
-      generator:
-        description: "Only this generator (blank for all)"
+        options:
+          - "Everything in the catalogue"
+          - "Shelving only (bin racks and the fit gauge)"
+          - "Folding bins only"
+          - "Advent calendars only"
+      how_many:
+        description: "How many models to build. Leave blank for all of them; put a number to try a few first (they are spread across the range, not just the first few)"
         required: false
         default: ""
-      chunk_size:
-        description: "Items per parallel job"
+      publish:
+        description: "When it is done, publish the models as a GitHub release? (Only allowed when you built everything)"
+        required: true
+        default: "No, just keep the files with this run"
+        type: choice
+        options:
+          - "No, just keep the files with this run"
+          - "Yes, publish a release"
+      release_name:
+        description: "Name for the release. Leave blank to name it after the catalogue (for example storage-shelving-v0.3.0)"
+        required: false
+        default: ""
+      parallel:
+        description: "How many models each parallel job builds. Smaller is faster but uses more runners; 8 is fine"
         required: false
         default: "8"
-      publish:
-        description: "Publish the result as a GitHub release"
-        required: false
-        default: "no"
-        type: choice
-        options: [ "no", "yes" ]
-      release_tag:
-        description: "Override the tag (blank derives it from catalogue.json)"
-        required: false
-        default: ""
   push:
     paths:
       - catalogue.json
 
 permissions:
   contents: read
+
+env:
+  # Turn the plain-English choice into the generator filter the CLI takes.
+  GENERATOR: >-
+    ${{ startsWith(inputs.what, 'Shelving') && 'bin-shelf,fit-gauge'
+     || startsWith(inputs.what, 'Folding') && 'folding-bin'
+     || startsWith(inputs.what, 'Advent') && 'advent-calendar'
+     || '' }}
+  LIMIT: ${{ inputs.how_many }}
+  PUBLISH: ${{ startsWith(inputs.publish, 'Yes') && 'yes' || 'no' }}
 
 jobs:
   plan:
@@ -64,13 +80,10 @@ jobs:
       - name: Expand and validate the catalogue
         id: plan
         env:
-          LIMIT: ${{ inputs.limit }}
-          PICK: ${{ inputs.pick || 'spread' }}
-          GENERATOR: ${{ inputs.generator }}
-          CHUNK_SIZE: ${{ inputs.chunk_size || '8' }}
+          CHUNK_SIZE: ${{ inputs.parallel || '8' }}
         run: |
           set -euo pipefail
-          ARGS=(--pick "${PICK}" --chunk-size "${CHUNK_SIZE}")
+          ARGS=(--pick spread --chunk-size "${CHUNK_SIZE}")
           [ -n "${LIMIT}" ] && ARGS+=(--limit "${LIMIT}")
           [ -n "${GENERATOR}" ] && ARGS+=(--generator "${GENERATOR}")
 
@@ -79,7 +92,7 @@ jobs:
           MATRIX=$(storagegen plan "${ARGS[@]}" --emit matrix)
           echo "count=${COUNT}" >> "$GITHUB_OUTPUT"
           echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
-          echo "Planning ${COUNT} items across $(echo "${MATRIX}" | python -c 'import json,sys; print(len(json.load(sys.stdin)))') jobs" >> "$GITHUB_STEP_SUMMARY"
+          echo "Building ${COUNT} models (${{ inputs.what || 'everything, because catalogue.json changed' }}) across $(echo "${MATRIX}" | python -c 'import json,sys; print(len(json.load(sys.stdin)))') jobs" >> "$GITHUB_STEP_SUMMARY"
 
   build:
     name: Build ${{ matrix.chunk }}/${{ matrix.chunks }}
@@ -100,13 +113,9 @@ jobs:
       - run: pip install -e .
 
       - name: Build this chunk
-        env:
-          LIMIT: ${{ inputs.limit }}
-          PICK: ${{ inputs.pick || 'spread' }}
-          GENERATOR: ${{ inputs.generator }}
         run: |
           set -euo pipefail
-          ARGS=(--pick "${PICK}" --chunk ${{ matrix.chunk }} --chunks ${{ matrix.chunks }})
+          ARGS=(--pick spread --chunk ${{ matrix.chunk }} --chunks ${{ matrix.chunks }})
           [ -n "${LIMIT}" ] && ARGS+=(--limit "${LIMIT}")
           [ -n "${GENERATOR}" ] && ARGS+=(--generator "${GENERATOR}")
           # `batch` re-reads every file it writes and fails on a bad mesh.
@@ -177,9 +186,7 @@ jobs:
           echo "title=${TITLE}" >> "$GITHUB_OUTPUT"
           echo "complete=${COMPLETE}" >> "$GITHUB_OUTPUT"
         env:
-          OVERRIDE: ${{ inputs.release_tag }}
-          LIMIT: ${{ inputs.limit }}
-          GENERATOR: ${{ inputs.generator }}
+          OVERRIDE: ${{ inputs.release_name }}
 
       - name: Write the release notes
         run: |
@@ -198,17 +205,17 @@ jobs:
           retention-days: 90
 
       # A tag claims to be the whole catalogue, so refuse to hang one on a run
-      # that was narrowed by --limit or --generator.
+      # that was narrowed to a few items or one product line.
       - name: Refuse to publish a partial run
-        if: inputs.publish == 'yes' && steps.release.outputs.complete != 'True'
+        if: env.PUBLISH == 'yes' && steps.release.outputs.complete != 'True'
         run: |
           echo "This run built ${{ needs.plan.outputs.count }} of the catalogue, not all of it." >&2
           echo "Publishing it as ${{ steps.release.outputs.tag }} would claim more than it contains." >&2
-          echo "Re-run with no limit and no generator filter, or pass release_tag to name it something else." >&2
+          echo "Re-run with 'Everything in the catalogue' and no number in 'how many', or give the release its own name." >&2
           exit 1
 
       - name: Publish the release
-        if: inputs.publish == 'yes' && needs.build.result == 'success'
+        if: env.PUBLISH == 'yes' && needs.build.result == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
