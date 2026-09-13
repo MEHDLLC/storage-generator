@@ -124,6 +124,13 @@ def _dimension_table(facts: dict[str, Any], result: BuildResult,
         )
     if "level_pitch_mm" in facts:
         rows.append(("Level spacing", mm_in(facts["level_pitch_mm"])))
+    if "days" in facts:
+        rows.append(("Boxes", str(facts["days"])))
+        w, d, h = facts["box_outside_mm"]
+        rows.append(("Each box", f"{mm_in(w)} x {mm_in(d)} x {mm_in(h)}, "
+                                 f"about {facts['box_inside_ml']:.0f} ml inside"))
+        rows.append(("Keys and panels",
+                     f"{facts['keys']} keys, {facts['panels_total']} panels"))
 
     density = MATERIAL_DENSITY.get(opt.get("material", "pla"), 1.24)
     volume = result.total_volume_cm3

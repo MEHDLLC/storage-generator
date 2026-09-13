@@ -4,9 +4,10 @@ Parametric generators for printable storage hardware. Each generator takes a
 set of options, builds real solid geometry, and writes a run folder containing
 STLs, a 3MF, a rendered preview, and the title and description that go with it.
 
-Two generators so far: a **hanging bin rack** that carries tote bins by their
-rims, built around the **GreenMade Mini Bin**, and a **folding bin** whose four
-walls pivot down flat onto its own floor.
+Three generators so far: a **hanging bin rack** that carries tote bins by
+their rims, built around the **GreenMade Mini Bin**; a **folding bin** whose
+four walls pivot down flat onto its own floor; and an **advent calendar** of
+numbered snap-lid boxes that clip together into one piece.
 
 ![The rack with bins in it](docs/images/bin-shelf-in-use.png)
 
@@ -96,6 +97,33 @@ further is still standing.
 bin, so it drops into any rack this repo builds. See
 [docs/folding-bin.md](docs/folding-bin.md).
 
+## The advent calendar
+
+Twenty-five boxes, each with a snap-in lid carrying that day's number inside a
+motif, that clip together on any side into a tree, a grid or a row. Flat
+panels slide onto the outside faces so the finished calendar shows no joints.
+
+![The calendar as a tree](docs/images/advent-calendar.png)
+
+```bash
+PYTHONPATH=src python3 -m storagegen.cli advent-calendar --out out
+PYTHONPATH=src python3 -m storagegen.cli advent-calendar --shape cylinder \
+    --frame snowflake --lego yes --numbering reversed --out out
+```
+
+Every side of every box carries the same dovetail slot, so any box joins any
+box with a small double-dovetail key dropped in from the top, and the same
+slot takes an outside panel where there is no neighbour. The generator reads
+the arrangement, counts the joints and the outside faces, and prints exactly
+the keys and panels it needs, with the panel ends mitred for the corners they
+meet.
+
+The lid is a flat plate that snaps under a lip in the rim and lifts out by a
+tab, which is what lets the number, the motif -- circle, square, star, tree,
+heart, snowflake -- and the optional Lego-compatible studs all print face up.
+Boxes come as `box`, `hexagon`, `triangle` or `cylinder`. See
+[docs/advent-calendar.md](docs/advent-calendar.md).
+
 ## Patterns
 
 Each of the four surfaces -- `sides`, `back`, `base`, `top` -- can be `open`,
@@ -119,10 +147,11 @@ upper edges at 45 degrees or steeper, and square holes get their top corners
 taken off so nothing bridges more than 12 mm. That rule is enforced by a test
 that walks the outline of every cut-out rather than being left as a promise.
 
-Both generators use the same six patterns and the same rule.
+Every generator uses the same six patterns and the same rule; the advent
+calendar's panels take them as shallow grooves rather than holes.
 
-See [docs/bin-shelf.md](docs/bin-shelf.md) and
-[docs/folding-bin.md](docs/folding-bin.md) for the designs in detail, and
+See [docs/bin-shelf.md](docs/bin-shelf.md), [docs/folding-bin.md](docs/folding-bin.md)
+and [docs/advent-calendar.md](docs/advent-calendar.md) for the designs in detail, and
 [docs/adding-a-generator.md](docs/adding-a-generator.md) for how to add the
 next one.
 

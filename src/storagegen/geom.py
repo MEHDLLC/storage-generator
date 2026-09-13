@@ -251,3 +251,69 @@ def _dedupe(points: Sequence[Point2]) -> list[Point2]:
     while len(out) > 1 and abs(out[0][0] - out[-1][0]) < EPS and abs(out[0][1] - out[-1][1]) < EPS:
         out.pop()
     return out
+
+
+# ---------------------------------------------------------------------------
+# 2-D work: outlines, offsets and strokes
+# ---------------------------------------------------------------------------
+#
+# Anything drawn on a face -- a numeral, a motif, a ring round a motif -- is
+# easier to get right flat, as a set of polygons, and extruded once. Doing the
+# same with one prism per stroke leaves a sliver on every shared face.
+
+Polygons = list[list[Point2]]
+
+
+def flat(polys: Iterable[Iterable[Point2]]) -> m3.CrossSection:
+    """A CrossSection from polygons, with holes resolved by winding."""
+    return m3.CrossSection([[tuple(p) for p in poly] for poly in polys],
+                           m3.FillRule.Positive)
+
+
+def polygons_of(shape: m3.CrossSection) -> Polygons:
+    return [[(float(a), float(b)) for a, b in poly] for poly in shape.to_polygons()]
+
+
+def offset_polygon(poly: Iterable[Point2], delta: float,
+                   rounded: bool = False) -> Polygons:
+    """Grow (or shrink, for negative delta) a polygon by `delta`."""
+    join = m3.JoinType.Round if rounded else m3.JoinType.Miter
+    return polygons_of(flat([poly]).offset(delta, join, 2.0, 32))
+
+
+def ring(poly: Iterable[Point2], width: float, rounded: bool = False) -> Polygons:
+    """An outline of `poly` drawn `width` wide, inside its edge."""
+    shape = flat([poly])
+    join = m3.JoinType.Round if rounded else m3.JoinType.Miter
+    return polygons_of(shape - shape.offset(-width, join, 2.0, 32))
+
+
+def stroke(polylines: Iterable[Sequence[Point2]], width: float,
+           segments: int = 24) -> Polygons:
+    """Every polyline drawn as a `width`-wide line with round ends and joins."""
+    r = width / 2.0
+    pieces: list[m3.CrossSection] = []
+    for line in polylines:
+        pts = list(line)
+        for p in pts:
+            pieces.append(m3.CrossSection.circle(r, segments).translate(list(p)))
+        for p, q in zip(pts, pts[1:]):
+            dx, dy = q[0] - p[0], q[1] - p[1]
+            length = math.hypot(dx, dy)
+            if length < 1e-9:
+                continue
+            nx, ny = -dy / length * r, dx / length * r
+            # Counter-clockwise, or the positive fill rule reads it as a hole.
+            pieces.append(flat([[(p[0] - nx, p[1] - ny), (q[0] - nx, q[1] - ny),
+                                 (q[0] + nx, q[1] + ny), (p[0] + nx, p[1] + ny)]]))
+    if not pieces:
+        return []
+    return polygons_of(m3.CrossSection.batch_boolean(pieces, m3.OpType.Add))
+
+
+def extrude(polys: Iterable[Iterable[Point2]], z0: float, z1: float) -> Solid:
+    """Polygons (holes included) extruded between two heights."""
+    shape = flat(polys)
+    if shape.is_empty() or z1 <= z0:
+        return empty()
+    return shape.extrude(z1 - z0).translate([0.0, 0.0, z0])

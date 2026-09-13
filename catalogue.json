@@ -3,9 +3,9 @@
   "_comment": "Every product worth building. `items` are one-offs; `sweeps` expand their axes into every combination. Validated against each generator's own options, so a typo here fails in seconds rather than in a hundred build jobs.",
   "release": {
     "name": "storage-shelving",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "title": "Storage Shelving",
-    "summary": "Hanging bin racks for the GreenMade Mini Bin, folding bins that collapse flat onto their own floors, and the fit gauge that measures your bin so the rails match it. Every rack carries its bins on a pair of rails that catch them under the rim; every folding bin snaps together from five flat-printed parts with no fasteners. Nothing in the release needs support material."
+    "summary": "Hanging bin racks for the GreenMade Mini Bin, folding bins that collapse flat onto their own floors, advent calendars of numbered snap-lid boxes that clip together into one piece, and the fit gauge that measures your bin so the rails match it. Nothing in the release needs support material."
   },
   "items": [
     {
@@ -54,6 +54,36 @@
         "preset": "greenmade-rack"
       },
       "_comment": "sized to hang from the same rails as the moulded bin, so it drops into any rack in this release"
+    },
+    {
+      "name": "advent-calendar_tree_brick",
+      "generator": "advent-calendar",
+      "options": {
+        "numbering": "reversed"
+      },
+      "_comment": "the default: 25 boxes as a tree, tree motif with a star at the tip, brick outside"
+    },
+    {
+      "name": "advent-calendar_grid_lego",
+      "generator": "advent-calendar",
+      "options": {
+        "days": 24,
+        "arrangement": "grid",
+        "frame": "circle",
+        "lego": true,
+        "skin": "honeycomb"
+      }
+    },
+    {
+      "name": "advent-calendar_cylinder_snowflake",
+      "generator": "advent-calendar",
+      "options": {
+        "shape": "cylinder",
+        "width": 52,
+        "frame": "snowflake",
+        "number": "recessed",
+        "skin": "plain"
+      }
     }
   ],
   "sweeps": [
