@@ -240,7 +240,7 @@ MOTIFS: dict[str, Motif] = {
     "square": Motif([(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)],
                     0.5, 0.0),
     "star": Motif(_star(inner=0.48), 0.2, -0.03),
-    "tree": Motif(TREE, 0.22, -0.25),
+    "tree": Motif(TREE, 0.28, -0.06),
     "heart": Motif(_heart(), 0.34, 0.06),
     "snowflake": Motif([], 0.3, 0.0, _snowflake()),
 }
@@ -259,6 +259,49 @@ def motif_polygons(name: str, size: float, ring: float,
     shape = [(centre[0] + x * size, centre[1] + y * size)
              for x, y in motif.outline]
     return geom.ring(shape, ring, rounded=(name == "circle"))
+
+
+def motif_inside(name: str, size: float, centre: Point = (0.0, 0.0)) -> geom.Polygons:
+    """The clear space inside the motif, where the number may go."""
+    motif = MOTIFS[name]
+    if motif.outline:
+        shape = [(centre[0] + x * size, centre[1] + y * size)
+                 for x, y in motif.outline]
+        return geom.offset_polygon(shape, -(RING_W + 0.8))
+    if motif.strokes:
+        return [geom.circle_profile(0.24 * size - RING_W / 2.0 - 0.8, centre)]
+    return []
+
+
+def _place_number(name: str, size: float, text: str,
+                  centre: Point = (0.0, 0.0)) -> tuple[float, Point]:
+    """Where the number goes: the biggest it can be inside the motif, and
+    as close to the middle as that size allows.
+
+    A fixed spot cannot work. The tree is narrow at the top, notched at
+    every tier and has a trunk at the bottom; the star has five points and
+    a small middle; and on a Lego lid the whole motif shrinks while the
+    outline stays 1.6 mm wide, so whatever room there was closes up. So the
+    number is tried at a range of sizes, largest first, and at a range of
+    heights, most central first, and the first fit wins.
+    """
+    motif = MOTIFS[name]
+    inside = motif_inside(name, size, centre)
+    if not inside:
+        return size * motif.scale, (centre[0], centre[1] + size * motif.drop)
+    room = geom.flat(inside)
+    prefer = centre[1] + size * motif.drop
+    shifts = sorted((k * 0.03 * size for k in range(-10, 11)), key=abs)
+    width_per_h = (len(text) * (GLYPH_W + 2.0) - 2.0) / GLYPH_H
+    for h in [size * (0.5 - 0.025 * i) for i in range(17)]:
+        half_w, half_h = width_per_h * h / 2.0 + STROKE * h / GLYPH_H / 2.0, h / 2.0
+        for dy in shifts:
+            cy = prefer + dy
+            rect = [(centre[0] - half_w, cy - half_h), (centre[0] + half_w, cy - half_h),
+                    (centre[0] + half_w, cy + half_h), (centre[0] - half_w, cy + half_h)]
+            if (geom.flat([rect]) - room).area() < 1e-6:
+                return h, (centre[0], cy)
+    return size * 0.1, (centre[0], prefer)
 
 
 def motif_clear(name: str, size: float, centre: Point = (0.0, 0.0)) -> list[Point]:
@@ -522,8 +565,7 @@ def _lid(lay: Layout, number: int, frame: str | None = None) -> geom.Solid:
     size = min(lay.lid_size) - 2.0 * margin
     for _ in range(30):
         relief = motif_polygons(frame, size, RING_W, centre)
-        num_h = size * motif.scale
-        num_c = (centre[0], centre[1] + size * motif.drop)
+        num_h, num_c = _place_number(frame, size, str(number), centre)
         relief += number_polygons(str(number), num_h, num_c)
         if (geom.flat(relief) - room).area() < 1e-6:
             break
